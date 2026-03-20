@@ -164,7 +164,7 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
 
 `event_emergency` peut être **`{ "vet_bill": number, "wallet_gold_after": number }`** (tirage **9 %** par requête, un seul tirage par appel).
 
-**Tick** (rappel) : démo = **−1 `food`** et **−1 `water`** toutes les **10 s** ; sinon −1/heure chacun, **×2** en `hardcore` ; si **food** ou **water** &lt; 10, pénalité santé ; `is_sick` si santé &lt; 50.
+**Tick** (rappel) : démo = **−1 `food`** et **−1 `water`** toutes les **10 s** ; sinon −1/heure chacun, **×2** en `hardcore` ; si **food** ou **water** = 0, pénalité santé ; `is_sick` si santé &lt; 50.
 
 ---
 

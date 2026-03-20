@@ -54,7 +54,7 @@ function applyTickToStats(dog, user, nowTs) {
   food = Math.max(0, food - foodLoss);
   water = Math.max(0, water - waterLoss);
 
-  if (food < 10 || water < 10) {
+  if (food === 0 || water === 0) {
     const penalty = Math.max(foodLoss, waterLoss, 1);
     health = Math.max(0, health - penalty);
   }
