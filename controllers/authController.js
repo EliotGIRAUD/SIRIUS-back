@@ -2,12 +2,6 @@ const userService = require('../services/userService');
 
 const PROTOTYPE_UID = process.env.PROTOTYPE_FIXED_UID || 'proto-sirius-user-001';
 
-/**
- * POST /auth/login — connexion simulée pour le prototype.
- * On exige un pseudo enregistré sur le compte (document users/{uid}).
- * On ignore email / mot de passe ; on renvoie toujours le même uid pour que le front
- * puisse enchaîner avec POST /init-dog et GET /dog/:userId avec un userId stable.
- */
 async function login(req, res) {
   try {
     const pseudoRaw = req.body && req.body.pseudo;

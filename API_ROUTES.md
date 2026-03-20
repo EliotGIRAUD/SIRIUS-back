@@ -1,106 +1,345 @@
-# API SIRIUS — Prototype Jalon 1 (Backend)
+# API SIRIUS — Référence backend (V1)
 
-Base URL : selon déploiement (ex. `http://localhost:3001` en local, ou URL Render).
+## Général
 
-Toutes les réponses d’erreur possibles : `{ "error": "message" }` avec un code HTTP approprié.
+- **Base URL** : à définir selon environnement (`http://localhost:3001` en local, URL **Render** ou autre en prod). Si `PORT` est défini dans `.env`, utiliser ce port.
+- **Encodage** : `Content-Type: application/json` pour toutes les requêtes avec corps.
+- **Erreurs** : corps typique `{ "error": "message lisible" }` avec un code HTTP **4xx** ou **500**.
+
+## Variables d’environnement (serveur)
+
+| Variable | Rôle |
+|----------|------|
+| `PORT` | Port HTTP d’écoute (défaut **3001** si absent). |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Chemin relatif ou absolu vers le JSON du compte de service Firebase (voir `config/firebase.js`). |
+| `DATABASE_URL` | URL base temps réel Firebase si utilisée par la config Admin (optionnel selon projet). |
+| `CORS_ORIGINS` | Liste séparée par des **virgules** d’origines autorisées. Si **vide ou absent** : **toutes** les origines sont acceptées (pratique dev mobile, **à restreindre en prod**). |
+| `PROTOTYPE_FIXED_UID` | UID renvoyé par `POST /auth/login` (défaut **`proto-sirius-user-001`**). |
+
+## Firestore : schéma et règles
+
+- **`users/{uid}`** : `uid`, `pseudo`, `wallet_gold`, `wallet_gems`, `difficulty_mode`, `is_demo_mode`, `unlocked_breeds`, horodatage éventuel.
+- **`dogs/{id}`** : `id` généré par Firestore ; `ownerId`, `name`, `breed`, `hunger`, `health`, `thirst`, `is_sick`, `last_update`, `abandonment_pending_video`, `abandonment_marked_at`, etc.
+- **`inventory/{ownerId}`** : `ownerId`, `items` : `{ "croquettes": number, "water_bottle": number }`.
+
+**Accès aux données** : cette API utilise le **SDK Admin** (`firebase-admin`) : elle **contourne** les règles de sécurité Firestore côté serveur.  
+Les règles `firestore.rules` du dépôt ont été verrouillées pour `users`, `dogs` et `inventory` afin d’empêcher l’accès direct côté client. Utiliser uniquement les endpoints Express pour lire/écrire via l’API.
+
+## Table des routes
+
+| Méthode | Chemin | Fichier route |
+|---------|--------|---------------|
+| POST | `/auth/login` | `routes/authRoutes.js` |
+| POST | `/init-dog` | `routes/dogRoutes.js` |
+| GET | `/dogs/:userId` | `routes/dogRoutes.js` |
+| POST | `/dog/:id/abandon` | `routes/dogRoutes.js` |
+| POST | `/shop/buy` | `routes/shopRoutes.js` |
+| POST | `/shop/unlock-breed` | `routes/shopRoutes.js` |
+| PATCH | `/interact/feed` | `routes/interactRoutes.js` |
+| PATCH | `/interact/clean` | `routes/interactRoutes.js` |
+| PATCH | `/walk/validate` | `routes/interactRoutes.js` |
+
+## Objet « chien » dans `GET /dogs/:userId` (`dogs[]`)
+
+Chaque élément est sérialisé avec au minimum :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `id` | string | ID document Firestore (à utiliser pour **feed** et **abandon**). |
+| `ownerId` | string | Propriétaire (= `userId` / `uid`). |
+| `name` | string | Nom du chien. |
+| `breed` | string | Race (identifiant snake_case côté stockage). |
+| `hunger`, `thirst`, `health` | number | Stats courantes (après tick). |
+| `is_sick` | boolean | `true` si santé &lt; 50 après règles métier. |
+| `last_update` | string ISO | Moment de référence du tick. |
+| `abandonment_pending_video` | boolean | Si abandon signalé. |
+| `createdAt` / `updatedAt` | string ISO | Si présents en base. |
+
+## Prix boutique (côté serveur)
+
+**Or (`wallet_gold`)** — `POST /shop/buy` :
+
+| `item` | Prix unitaire (or) |
+|--------|----------------------|
+| `croquettes` | 20 |
+| `water_bottle` | 25 |
+
+**Gemmes (`wallet_gems`)** — `POST /shop/unlock-breed` :
+
+| `breed` (snake_case) | Coût (gemmes) |
+|----------------------|----------------|
+| `husky` | 150 |
+| `beagle` | 120 |
+| `berger_allemand` | 200 |
+
+Alias body : `produit` pour `item` ; `race` pour `breed` (normalisé en snake_case côté serveur).
 
 ---
 
 ## `POST /auth/login`
 
-Simule une connexion pour le prototype. Aucune vérification des identifiants (email / mot de passe ignorés).
+**Body**
 
-**Body JSON requis** :
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `pseudo` | string | oui |
 
-| Champ    | Type   | Obligatoire | Description                           |
-|----------|--------|-------------|---------------------------------------|
-| `pseudo` | string | oui         | Pseudo du joueur (affiché côté compte) |
+**Réponses**
 
-**Exemple** :
+- **200** : exemple  
+  `{"uid":"proto-sirius-user-001","pseudo":"Joueur1","message":"Connexion simulée (prototype Jalon 1)"}`  
+  (`uid` = `PROTOTYPE_FIXED_UID` ou valeur `.env`.)
+- **400** : pseudo absent ou vide.
+- **500** : erreur serveur / Firebase.
 
-```json
-{ "pseudo": "Nexus42" }
-```
-
-Enregistre ou met à jour le document Firestore **`users/{uid}`** avec ce pseudo (`uid` = valeur fixe du prototype, voir ci‑dessous).
-
-**Réponse `200`** (exemple) :
-
-```json
-{
-  "uid": "proto-sirius-user-001",
-  "pseudo": "Nexus42",
-  "message": "Connexion simulée (prototype Jalon 1)"
-}
-```
-
-- Conserver **`uid`** côté front : c’est le **`userId`** à envoyer à **`POST /init-dog`** et dans l’URL de **`GET /dog/:userId`**.
-- Pour changer l’uid fixe sans toucher au code : variable d’environnement **`PROTOTYPE_FIXED_UID`**.
-
-**Réponse `400`** : `pseudo` absent ou vide.
+Comportement : met à jour ou crée **`users/{uid}`** ; complète les champs économie s’ils manquaient (voir `userService`).
 
 ---
 
 ## `POST /init-dog`
 
-Crée le document Firestore **`chiens/{userId}`** avec les stats par défaut et le nom du chien.
+**Body**
 
-**Body JSON requis** :
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `name` | string | oui |
+| `userId` | string | oui (souvent = `uid` du login) |
+| `breed` ou `race` | string | non |
 
-| Champ    | Type   | Obligatoire | Description                                      |
-|----------|--------|-------------|--------------------------------------------------|
-| `name`   | string | oui         | Nom affiché du chien                             |
-| `userId` | string | oui         | Même valeur que `uid` renvoyé par `/auth/login` |
-| `race`   | string | non         | Ex. `"Golden Retriever"`                        |
+**Réponses**
 
-**Exemple** :
+- **201** : chien créé ; contient **`id`** (ID Firestore). Exemple :  
+  `{"id":"abc123","ownerId":"proto-sirius-user-001","name":"Rex","breed":"golden_retriever","hunger":100,"health":100,"thirst":100,...}`
+- **404** : utilisateur **`users/{userId}`** introuvable (login requis avant).
+- **400** : `name` ou `userId` manquant.
+- **500** : erreur serveur.
 
-```json
-{
-  "name": "Sirius",
-  "userId": "proto-sirius-user-001",
-  "race": "Golden Retriever"
-}
-```
-
-**Réponse `201`** : objet chien persisté (champs principaux : `hunger`, `health`, `maladie`, `wallet_soft_gold`, `wallet_hard_gems`, `name`, `nom`, `race`, `userId`). Les champs Firestore `createdAt` / `updatedAt` sont gérés côté serveur.
-
-**Réponse `400`** : `name` ou `userId` manquant ou vide.
+Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(userId)`** si pas d’inventaire.
 
 ---
 
-## `GET /dog/:userId`
+## `GET /dogs/:userId`
 
-Retourne les données pour le dashboard pour le chien associé à cet utilisateur.
+**Paramètre URL** : `userId` (= `uid`).
 
-**Paramètre d’URL** : `userId` — identique à celui utilisé dans **`POST /init-dog`**.
+**Réponses**
 
-**Réponse `200`** : stats + alias lisibles pour le front :
+- **200** : état agrégé même si **`dogs`** est un **tableau vide** `[]` (pas d’erreur « pas de chien »).
+- **404** : utilisateur inconnu.
 
-| Champ                | Signification dashboard |
-|----------------------|-------------------------|
-| `hunger`, `faim`     | Faim                    |
-| `health`, `sante`    | Santé                   |
-| `maladie`            | Maladie                 |
-| `wallet_soft_gold`, `or` | Or (soft currency) |
-| `wallet_hard_gems`, `gemmes` | Gemmes           |
-| `name`, `nom`, `race` | Infos affichage        |
-| `pseudo`              | Pseudo du compte (depuis `users/{userId}`) |
-| `userId`             | Référence utilisateur   |
+**Corps typique (succès)** :
 
-**Réponse `404`** : aucun document `chiens/{userId}` (initialiser avec **`POST /init-dog`** d’abord).
+```json
+{
+  "userId": "proto-sirius-user-001",
+  "uid": "proto-sirius-user-001",
+  "pseudo": "Joueur1",
+  "wallet_gold": 500,
+  "wallet_gems": 50,
+  "difficulty_mode": "normal",
+  "is_demo_mode": false,
+  "unlocked_breeds": ["golden_retriever"],
+  "or": 500,
+  "gemmes": 50,
+  "wallet_soft_gold": 500,
+  "wallet_hard_gems": 50,
+  "inventory": { "ownerId": "proto-sirius-user-001", "items": { "croquettes": 2, "water_bottle": 1 } },
+  "event_emergency": null,
+  "dogs": [
+    {
+      "id": "XXXXXXXX",
+      "ownerId": "proto-sirius-user-001",
+      "name": "Rex",
+      "breed": "golden_retriever",
+      "hunger": 95,
+      "thirst": 95,
+      "health": 100,
+      "is_sick": false,
+      "last_update": "2026-03-20T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+`event_emergency` peut être **`{ "vet_bill": number, "wallet_gold_after": number }`** (tirage **9 %** par requête, un seul tirage par appel).
+
+**Tick** (rappel) : démo = −1 faim et −1 soif toutes les **10 s** écoulées ; sinon −1/heure chacun, **×2** en `hardcore` ; si faim ou soif &lt; 10, pénalité santé ; `is_sick` si santé &lt; 50.
+
+---
+
+## `POST /shop/buy`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `item` | string | oui (`croquettes` \| `water_bottle`) |
+| `quantity` | entier | non (défaut **1**) |
+
+**Réponses**
+
+- **200** : ex.  
+  `{"wallet_gold":480,"spent":20,"items":{"croquettes":3,"water_bottle":1},"item":"croquettes","quantity":1}`
+- **400** : `userId` manquant ; `quantity` invalide ; article inconnu ; solde insuffisant.
+- **404** : utilisateur inconnu ou **inventaire inexistant** (faire au moins un **`init-dog`** avant pour créer l’inventaire).
+
+---
+
+## `POST /shop/unlock-breed`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `breed` | string | oui (voir tableau prix gemmes) |
+
+**Réponses**
+
+- **200** : ex.  
+  `{"wallet_gems":300,"spent_gems":150,"unlocked_breeds":["golden_retriever","husky"],"breed":"husky"}`
+- **400** : `userId` / `breed` manquant ; race inconnue ; gemmes insuffisantes ; race déjà débloquée.
+- **404** : utilisateur inconnu.
+
+---
+
+## `PATCH /interact/feed`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `dogId` | string | oui — **`id`** retourné par **`init-dog`** ou dans **`dogs[]`** |
+
+**Réponses**
+
+- **200** : ex.  
+  `{"dogId":"...","hunger":100,"items":{"croquettes":1,"water_bottle":1}}`
+- **400** : `userId` ou `dogId` manquant ; pas de croquettes.
+- **403** : **`ownerId`** du chien ≠ `userId`.
+- **404** : chien ou inventaire introuvable.
+
+---
+
+## `PATCH /interact/clean`
+
+Interaction type **gyroscope** (« ramasser les besoins ») : crédit fixe **+5** `wallet_gold`.
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+
+**Réponses**
+
+- **200** : ex. `{"wallet_gold":505,"wallet_gold_delta":5}`
+- **400** : `userId` manquant.
+- **404** : utilisateur inconnu.
+
+---
+
+## `PATCH /walk/validate`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `distanceKm` | number &gt; 0 | oui (ou alias `distance`) |
+| `durationSec` | number &gt; 0 | oui (ou alias `duration`) |
+
+**Calcul** :
+
+- `durationHours = durationSec / 3600`
+- `speed_kmh = distanceKm / durationHours`
+
+**Crédit or** : si **`0 < speed_kmh < 15`**, alors  
+`wallet_gold_delta = floor(distanceKm * 8)`  
+(sinon delta 0, pas de mise à jour persiste si delta 0).
+
+**Réponses**
+
+- **200** avec crédit : ex.  
+  `{"speed_kmh":2,"wallet_gold_delta":16,"wallet_gold":516}`
+- **200** sans crédit (vitesse ≥ 15 ou autre) : ex.  
+  `{"speed_kmh":20,"wallet_gold_delta":0,"wallet_gold":null}`  
+  *(le champ `wallet_gold` peut être `null` si aucune écriture.)*
+- **400** : distance ou durée invalide ; `userId` manquant.
+- **404** : utilisateur inconnu (si transaction nécessaire).
+
+---
+
+## `POST /dog/:id/abandon`
+
+**Paramètre** : `id` = **`id`** Firestore du chien.
+
+**Réponses**
+
+- **200** : ex. `{"id":"...","abandonment_pending_video":true}`
+- **404** : chien inconnu.
+- **500** : erreur serveur.
 
 ---
 
 ## CORS
 
-- Par défaut : **toutes les origines** autorisées (pratique pour Expo Go, appareil physique, web local).
-- Production : définir **`CORS_ORIGINS`** dans `.env` avec une liste d’URLs séparées par des virgules (ex. `https://monfront.com,https://www.monfront.com`).
+Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_ORIGINS`** est renseigné, seules ces origines (et requêtes **sans** header `Origin`) passent ; sinon **tout** est autorisé.
 
 ---
 
-## Ordre de flux conseillé (front)
+## Flux conseillé (intégration front)
 
-1. `POST /auth/login` avec **`{ "pseudo": "..." }`** → récupérer **`uid`** et **`pseudo`**
-2. `POST /init-dog` avec **`userId: uid`** et **`name`** (et éventuellement **`race`**)
-3. `GET /dog/{uid}` pour afficher le dashboard (**`pseudo`** inclus dans la réponse)
+1. `POST /auth/login` → conserver **`uid`**.
+2. `POST /init-dog` avec **`userId: uid`** → conserver **`id`** du chien (répéter pour plusieurs chiens).
+3. `GET /dogs/{uid}` pour l’écran principal (liste **`dogs`**, wallets, inventaire).
+4. `POST /shop/buy` / `unlock-breed` avec **`userId: uid`**.
+5. `PATCH /interact/feed` avec **`userId`** + **`dogId`**.
+6. `PATCH /interact/clean` avec **`userId`**.
+7. `PATCH /walk/validate` avec **`userId`** + distance/durée.
+8. `POST /dog/{id}/abandon` si besoin.
+
+---
+
+## Sécurité — limitations du prototype actuel
+
+L’API **ne vérifie pas de jeton** (pas de JWT / session) : toute requête peut fournir un **`userId` quelconque** dans l’URL ou le body. Qui connaît ou devine un `userId` peut lire **`GET /dogs/:userId`**, dépenser l’or, appeler **clean** / **walk** / **shop**, etc. (**IDOR**).
+
+- **`POST /auth/login`** renvoie un **uid fixe** (ou depuis `.env`) : ce n’est **pas** une authentification forte.
+- **`POST /dog/:id/abandon`** ne vérifie **pas** que l’appelant est le propriétaire du chien.
+- **clean** et **walk** peuvent être **spamés** (pas de rate limiting).
+- En prod : restreindre **CORS**, ajouter **auth** (ex. vérifier un ID token Firebase et **ignorer** ou **contrôler** le `userId` du body), **rate limiting**, et renforcer **abandon**.
+
+Ces points sont une **dette sécurité** assumée pour le jalon ; le front doit traiter **`userId`** comme une donnée sensible côté UX, pas comme une protection serveur.
+
+---
+
+## Vérification manuelle (checklist)
+
+Exécutée contre une instance locale sur **`PORT=3010`** (le port **3001** peut être occupé par un autre service sur la machine).
+
+| Étape | Résultat attendu | Observé |
+|-------|------------------|--------|
+| POST `/auth/login` | 200 + `uid` | OK |
+| POST `/init-dog` | 201 + `id` auto | OK |
+| GET `/dogs/:uid` | 200, `dogs.length >= 1` | OK |
+| POST `/shop/buy` (user valide) | 200, or diminué | OK |
+| PATCH `/interact/feed` | 200, faim = 100 | OK |
+| PATCH `/interact/clean` | 200, `wallet_gold_delta` = 5 | OK |
+| PATCH `/walk/validate` (2 km / 3600 s) | vitesse 2 km/h, crédit `floor(16)` | OK |
+| POST `/dog/:id/abandon` | 200, `abandonment_pending_video` true | OK |
+
+Pour rejouer les tests : démarrer depuis le dossier backend avec  
+`$env:PORT='3010'; node server.js`  
+puis enchaîner les appels HTTP ci-dessus.
+
+---
+
+## Feuille de route sécurité (V2 — hors périmètre code actuel)
+
+- Vérifier un **JWT** (ex. Firebase Auth) et **lier** `userId` au **sub** du token.
+- Exiger `userId` + vérification **propriétaire** pour **abandon**.
+- **Rate limiting** sur `clean`, `walk`, `shop`.
+- Déployer **`firestore.rules`** cohérents si accès client direct à Firestore.

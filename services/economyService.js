@@ -1,0 +1,121 @@
+const admin = require('../config/firebase');
+const userService = require('./userService');
+const inventoryService = require('./inventoryService');
+
+const PRICES_GOLD = {
+  croquettes: 20,
+  water_bottle: 25,
+};
+
+const BREED_GEM_COST = {
+  husky: 150,
+  beagle: 120,
+  berger_allemand: 200,
+};
+
+function err(msg, status) {
+  const e = new Error(msg);
+  e.status = status;
+  return e;
+}
+
+async function shopBuy(ownerId, body = {}) {
+  const uid = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!uid) throw err('ownerId invalide', 400);
+
+  const itemRaw = body.item != null ? body.item : body.produit;
+  const item = typeof itemRaw === 'string' ? itemRaw.trim() : '';
+  const qty = Number(body.quantity != null ? body.quantity : 1);
+  if (!Number.isFinite(qty) || qty <= 0 || !Number.isInteger(qty)) {
+    throw err('quantity invalide : entier strictement positif', 400);
+  }
+
+  const unit = PRICES_GOLD[item];
+  if (unit == null) throw err('article inconnu (croquettes | water_bottle)', 400);
+
+  const db = admin.firestore();
+  const uRef = db.collection(userService.COLLECTION).doc(uid);
+  const iRef = inventoryService.inventoryRef(db, uid);
+
+  return db.runTransaction(async (tx) => {
+    const [uSnap, iSnap] = await Promise.all([tx.get(uRef), tx.get(iRef)]);
+    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
+    if (!iSnap.exists) throw err('Inventaire introuvable', 404);
+
+    const u = uSnap.data();
+    const gold = Number(u.wallet_gold);
+    const safeGold = Number.isFinite(gold) ? gold : 0;
+    const cost = Number(unit) * qty;
+    if (safeGold < cost) throw err('Solde insuffisant', 400);
+
+    const items = inventoryService.normalizeItems(iSnap.data().items);
+    if (item === 'croquettes') items.croquettes += qty;
+    else if (item === 'water_bottle') items.water_bottle += qty;
+
+    const nextGold = safeGold - cost;
+    const now = admin.firestore.Timestamp.now();
+
+    tx.update(uRef, {
+      wallet_gold: nextGold,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    tx.update(iRef, {
+      items,
+      updatedAt: now,
+    });
+
+    return {
+      wallet_gold: nextGold,
+      spent: cost,
+      items,
+      item,
+      quantity: qty,
+    };
+  });
+}
+
+async function shopUnlockBreed(ownerId, body = {}) {
+  const uid = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!uid) throw err('ownerId invalide', 400);
+
+  const breedRaw = body.breed != null ? body.breed : body.race;
+  const breed = typeof breedRaw === 'string' ? breedRaw.trim().toLowerCase().replace(/\s+/g, '_') : '';
+  if (!breed) throw err('breed requis', 400);
+
+  const cost = BREED_GEM_COST[breed];
+  if (cost == null) throw err('race non achetable ou inconnue', 400);
+
+  const db = admin.firestore();
+  const uRef = db.collection(userService.COLLECTION).doc(uid);
+
+  return db.runTransaction(async (tx) => {
+    const uSnap = await tx.get(uRef);
+    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
+
+    const u = uSnap.data();
+    const gems = Number(u.wallet_gems);
+    const safeGems = Number.isFinite(gems) ? gems : 0;
+    if (safeGems < cost) throw err('Gemmes insuffisantes', 400);
+
+    const unlocked = Array.isArray(u.unlocked_breeds) ? [...u.unlocked_breeds] : [];
+    if (unlocked.includes(breed)) throw err('Race déjà débloquée', 400);
+
+    unlocked.push(breed);
+    const nextGems = safeGems - cost;
+
+    tx.update(uRef, {
+      wallet_gems: nextGems,
+      unlocked_breeds: unlocked,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      wallet_gems: nextGems,
+      spent_gems: cost,
+      unlocked_breeds: unlocked,
+      breed,
+    };
+  });
+}
+
+module.exports = { shopBuy, shopUnlockBreed, PRICES_GOLD, BREED_GEM_COST };

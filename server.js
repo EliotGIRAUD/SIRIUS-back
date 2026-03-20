@@ -5,6 +5,8 @@ const cors = require('cors');
 require('./config/firebase');
 const authRoutes = require('./routes/authRoutes');
 const dogRoutes = require('./routes/dogRoutes');
+const shopRoutes = require('./routes/shopRoutes');
+const interactRoutes = require('./routes/interactRoutes');
 
 const app = express();
 
@@ -37,6 +39,8 @@ app.use(
 app.use(express.json());
 app.use('/', authRoutes);
 app.use('/', dogRoutes);
+app.use('/', shopRoutes);
+app.use('/', interactRoutes);
 
 const PORT = Number(process.env.PORT) || 3001;
 const server = http.createServer(app);

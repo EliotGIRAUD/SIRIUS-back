@@ -1,26 +1,82 @@
 const admin = require('../config/firebase');
+const userService = require('./userService');
+const inventoryService = require('./inventoryService');
 
-const COLLECTION = 'chiens';
+const COLLECTION = 'dogs';
 
-/**
- * Valeurs par défaut du chien après initialisation (Jalon 1).
- * Le front dashboard peut afficher : faim → hunger, santé → health, or → wallet_soft_gold, gemmes → wallet_hard_gems.
- */
-const DEFAULT_CHIEN = {
-  hunger: 100,
-  health: 100,
-  maladie: 0,
-  wallet_soft_gold: 500,
-  wallet_hard_gems: 50,
-  race: '',
-};
+const MAX_STAT = 100;
 
-/**
- * Crée ou écrase le document Firestore chiens/{userId}.
- * Attendu dans le body : name (nom affiché), userId (identifiant — ex. uid renvoyé par POST /auth/login).
- * Optionnel : race (ex. "Golden Retriever").
- */
-async function initChien(body = {}) {
+function dogDocRef(db, dogId) {
+  return db.collection(COLLECTION).doc(dogId.trim());
+}
+
+function applyTickToStats(dog, user, nowTs) {
+  let hunger = Number(dog.hunger);
+  let thirst = Number(dog.thirst);
+  let health = Number(dog.health);
+  if (!Number.isFinite(hunger)) hunger = MAX_STAT;
+  if (!Number.isFinite(thirst)) thirst = MAX_STAT;
+  if (!Number.isFinite(health)) health = MAX_STAT;
+
+  const last = dog.last_update;
+  const nowMs = nowTs.toMillis();
+  const lastMs = last && typeof last.toMillis === 'function' ? last.toMillis() : nowMs;
+  const deltaMs = Math.max(0, nowMs - lastMs);
+
+  const isDemo = user.is_demo_mode === true;
+  let hungerLoss = 0;
+  let thirstLoss = 0;
+
+  if (isDemo) {
+    const steps = Math.floor(deltaMs / 10000);
+    hungerLoss = steps;
+    thirstLoss = steps;
+  } else {
+    const hours = deltaMs / (1000 * 60 * 60);
+    const rate = user.difficulty_mode === 'hardcore' ? 2 : 1;
+    const loss = Math.floor(hours * rate);
+    hungerLoss = loss;
+    thirstLoss = loss;
+  }
+
+  hunger = Math.max(0, hunger - hungerLoss);
+  thirst = Math.max(0, thirst - thirstLoss);
+
+  if (hunger < 10 || thirst < 10) {
+    const penalty = Math.max(hungerLoss, thirstLoss, 1);
+    health = Math.max(0, health - penalty);
+  }
+
+  const is_sick = health < 50;
+
+  return {
+    hunger,
+    thirst,
+    health,
+    is_sick,
+    last_update: nowTs,
+  };
+}
+
+function serializeDog(id, data) {
+  if (!data) return null;
+  const o = { ...data, id };
+  if (o.last_update && typeof o.last_update.toDate === 'function') {
+    o.last_update = o.last_update.toDate().toISOString();
+  }
+  if (o.createdAt && typeof o.createdAt.toDate === 'function') {
+    o.createdAt = o.createdAt.toDate().toISOString();
+  }
+  if (o.updatedAt && typeof o.updatedAt.toDate === 'function') {
+    o.updatedAt = o.updatedAt.toDate().toISOString();
+  }
+  if (o.abandonment_marked_at && typeof o.abandonment_marked_at.toDate === 'function') {
+    o.abandonment_marked_at = o.abandonment_marked_at.toDate().toISOString();
+  }
+  return o;
+}
+
+async function initDog(body = {}) {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
   if (!name || !userId) {
@@ -29,47 +85,165 @@ async function initChien(body = {}) {
     throw err;
   }
 
-  const race = typeof body.race === 'string' ? body.race.trim() : '';
+  const db = admin.firestore();
+  const uSnap = await db.collection(userService.COLLECTION).doc(userId).get();
+  if (!uSnap.exists) {
+    const err = new Error('Utilisateur introuvable');
+    err.status = 404;
+    throw err;
+  }
 
-  const payload = {
-    ...DEFAULT_CHIEN,
-    userId,
+  const breed =
+    typeof body.breed === 'string'
+      ? body.breed.trim()
+      : typeof body.race === 'string'
+        ? body.race.trim()
+        : '';
+
+  const now = admin.firestore.Timestamp.now();
+  const ref = db.collection(COLLECTION).doc();
+  const dogId = ref.id;
+
+  const dogPayload = {
+    ownerId: userId,
     name,
-    race,
-    nom: name,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    breed: breed || 'golden_retriever',
+    hunger: MAX_STAT,
+    health: MAX_STAT,
+    thirst: MAX_STAT,
+    is_sick: false,
+    last_update: now,
+    abandonment_pending_video: false,
+    createdAt: now,
+    updatedAt: now,
   };
 
+  await ref.set(dogPayload);
+  await inventoryService.ensureInventory(userId);
+
+  return serializeDog(dogId, { ...dogPayload });
+}
+
+async function listDogsForUser(userId) {
   const db = admin.firestore();
-  const ref = db.collection(COLLECTION).doc(userId);
-  await ref.set({
-    ...payload,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  const uid = userId.trim();
+  const now = admin.firestore.Timestamp.now();
+
+  const uSnap = await db.collection(userService.COLLECTION).doc(uid).get();
+  if (!uSnap.exists) {
+    const err = new Error('Utilisateur introuvable');
+    err.status = 404;
+    throw err;
+  }
+  const userData = uSnap.data();
+
+  const qSnap = await db.collection(COLLECTION).where('ownerId', '==', uid).get();
+
+  const invRef = inventoryService.inventoryRef(db, uid);
+  const invSnap = await invRef.get();
+  const invData = invSnap.exists ? invSnap.data() : { items: {} };
+
+  const emergency = Math.random() < 0.09;
+  let vetBill = 0;
+  let userGold = Number(userData.wallet_gold);
+  if (!Number.isFinite(userGold)) userGold = 0;
+
+  if (emergency) {
+    vetBill = Math.floor(30 + Math.random() * 51);
+    userGold = Math.max(0, userGold - vetBill);
+  }
+
+  const batch = db.batch();
+  const dogsSerialized = [];
+
+  qSnap.docs.forEach((doc) => {
+    const data = doc.data();
+    const ticked = applyTickToStats(data, userData, now);
+    batch.update(doc.ref, {
+      hunger: ticked.hunger,
+      thirst: ticked.thirst,
+      health: ticked.health,
+      is_sick: ticked.is_sick,
+      last_update: ticked.last_update,
+      updatedAt: now,
+    });
+    const merged = { ...data, ...ticked };
+    dogsSerialized.push(serializeDog(doc.id, merged));
   });
 
-  const plain = { ...payload };
-  delete plain.updatedAt;
-  delete plain.createdAt;
-  return plain;
+  if (emergency) {
+    batch.update(db.collection(userService.COLLECTION).doc(uid), {
+      wallet_gold: userGold,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  if (qSnap.size > 0 || emergency) {
+    await batch.commit();
+  }
+
+  const freshUser = {
+    ...userData,
+    wallet_gold: emergency ? userGold : Number(userData.wallet_gold) || 0,
+  };
+
+  const event_emergency = emergency
+    ? { vet_bill: vetBill, wallet_gold_after: userGold }
+    : null;
+
+  return buildListResponseDto(uid, freshUser, invData, event_emergency, dogsSerialized);
 }
 
-/**
- * Lit chiens/{userId} et renvoie les données brutes (timestamps convertis en objets si besoin côté lecture sérialisée).
- */
-async function getChienByUserId(userId) {
-  if (!userId || typeof userId !== 'string') return null;
+function buildListResponseDto(uid, userData, invData, event_emergency, dogsSerialized) {
+  const wallet_gold = Number(userData.wallet_gold) || 0;
+  const wallet_gems = Number(userData.wallet_gems) || 0;
+  const pseudo = typeof userData.pseudo === 'string' ? userData.pseudo : '';
+  const items = inventoryService.normalizeItems(invData.items);
+
+  return {
+    userId: uid,
+    uid,
+    pseudo,
+    wallet_gold,
+    wallet_gems,
+    difficulty_mode: userData.difficulty_mode || 'normal',
+    is_demo_mode: !!userData.is_demo_mode,
+    unlocked_breeds: Array.isArray(userData.unlocked_breeds) ? userData.unlocked_breeds : [],
+    or: wallet_gold,
+    gemmes: wallet_gems,
+    wallet_soft_gold: wallet_gold,
+    wallet_hard_gems: wallet_gems,
+    inventory: { ownerId: uid, items },
+    event_emergency,
+    dogs: dogsSerialized,
+  };
+}
+
+async function markAbandonment(dogId) {
   const db = admin.firestore();
-  const snap = await db.collection(COLLECTION).doc(userId.trim()).get();
-  if (!snap.exists) return null;
-  const data = snap.data();
-  const out = { ...data };
-  if (out.createdAt && typeof out.createdAt.toDate === 'function') {
-    out.createdAt = out.createdAt.toDate().toISOString();
+  const ref = dogDocRef(db, dogId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    const err = new Error('Not found');
+    err.status = 404;
+    throw err;
   }
-  if (out.updatedAt && typeof out.updatedAt.toDate === 'function') {
-    out.updatedAt = out.updatedAt.toDate().toISOString();
-  }
-  return out;
+  const now = admin.firestore.Timestamp.now();
+  await ref.update({
+    abandonment_pending_video: true,
+    abandonment_marked_at: now,
+    updatedAt: now,
+  });
+  return { id: dogId, abandonment_pending_video: true };
 }
 
-module.exports = { initChien, getChienByUserId, COLLECTION };
+module.exports = {
+  initDog,
+  listDogsForUser,
+  markAbandonment,
+  applyTickToStats,
+  dogDocRef,
+  COLLECTION,
+  MAX_STAT,
+  serializeDog,
+};
