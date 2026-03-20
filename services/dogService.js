@@ -10,12 +10,24 @@ function dogDocRef(db, dogId) {
   return db.collection(COLLECTION).doc(dogId.trim());
 }
 
+/**
+ * Nourriture / eau : 100 = plein, diminue avec le temps (plus 0 = affamé / assoiffé).
+ * Lecture tolérante : anciens docs `hunger` / `thirst`.
+ */
+function readFood(dog) {
+  const v = Number(dog.food != null ? dog.food : dog.hunger);
+  return Number.isFinite(v) ? v : MAX_STAT;
+}
+
+function readWater(dog) {
+  const v = Number(dog.water != null ? dog.water : dog.thirst);
+  return Number.isFinite(v) ? v : MAX_STAT;
+}
+
 function applyTickToStats(dog, user, nowTs) {
-  let hunger = Number(dog.hunger);
-  let thirst = Number(dog.thirst);
+  let food = readFood(dog);
+  let water = readWater(dog);
   let health = Number(dog.health);
-  if (!Number.isFinite(hunger)) hunger = MAX_STAT;
-  if (!Number.isFinite(thirst)) thirst = MAX_STAT;
   if (!Number.isFinite(health)) health = MAX_STAT;
 
   const last = dog.last_update;
@@ -24,34 +36,34 @@ function applyTickToStats(dog, user, nowTs) {
   const deltaMs = Math.max(0, nowMs - lastMs);
 
   const isDemo = user.is_demo_mode === true;
-  let hungerLoss = 0;
-  let thirstLoss = 0;
+  let foodLoss = 0;
+  let waterLoss = 0;
 
   if (isDemo) {
     const steps = Math.floor(deltaMs / 10000);
-    hungerLoss = steps;
-    thirstLoss = steps;
+    foodLoss = steps;
+    waterLoss = steps;
   } else {
     const hours = deltaMs / (1000 * 60 * 60);
     const rate = user.difficulty_mode === 'hardcore' ? 2 : 1;
     const loss = Math.floor(hours * rate);
-    hungerLoss = loss;
-    thirstLoss = loss;
+    foodLoss = loss;
+    waterLoss = loss;
   }
 
-  hunger = Math.max(0, hunger - hungerLoss);
-  thirst = Math.max(0, thirst - thirstLoss);
+  food = Math.max(0, food - foodLoss);
+  water = Math.max(0, water - waterLoss);
 
-  if (hunger < 10 || thirst < 10) {
-    const penalty = Math.max(hungerLoss, thirstLoss, 1);
+  if (food < 10 || water < 10) {
+    const penalty = Math.max(foodLoss, waterLoss, 1);
     health = Math.max(0, health - penalty);
   }
 
   const is_sick = health < 50;
 
   return {
-    hunger,
-    thirst,
+    food,
+    water,
     health,
     is_sick,
     last_update: nowTs,
@@ -108,9 +120,9 @@ async function initDog(body = {}) {
     ownerId: userId,
     name,
     breed: breed || 'golden_retriever',
-    hunger: MAX_STAT,
+    food: MAX_STAT,
+    water: MAX_STAT,
     health: MAX_STAT,
-    thirst: MAX_STAT,
     is_sick: false,
     last_update: now,
     abandonment_pending_video: false,
@@ -160,14 +172,16 @@ async function listDogsForUser(userId) {
     const data = doc.data();
     const ticked = applyTickToStats(data, userData, now);
     batch.update(doc.ref, {
-      hunger: ticked.hunger,
-      thirst: ticked.thirst,
+      food: ticked.food,
+      water: ticked.water,
       health: ticked.health,
       is_sick: ticked.is_sick,
       last_update: ticked.last_update,
       updatedAt: now,
     });
     const merged = { ...data, ...ticked };
+    delete merged.hunger;
+    delete merged.thirst;
     dogsSerialized.push(serializeDog(doc.id, merged));
   });
 
@@ -242,6 +256,8 @@ module.exports = {
   listDogsForUser,
   markAbandonment,
   applyTickToStats,
+  readFood,
+  readWater,
   dogDocRef,
   COLLECTION,
   MAX_STAT,
