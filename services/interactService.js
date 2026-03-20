@@ -38,6 +38,7 @@ async function feedDog(userId, dogId) {
     tx.update(iRef, { items, updatedAt: now });
     tx.update(dRef, {
       food: dogService.MAX_STAT,
+      last_update: now,
       updatedAt: now,
     });
 

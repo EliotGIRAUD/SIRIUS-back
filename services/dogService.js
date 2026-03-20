@@ -6,6 +6,43 @@ const COLLECTION = 'dogs';
 
 const MAX_STAT = 100;
 
+/** Wall-clock ms for one “demo step” (legacy 10s cadence). */
+const DEMO_STEP_MS = 10_000;
+
+/**
+ * Per-breed decay: food/water are 100→0 at these hourly rates (× difficulty).
+ * Demo mode uses per–10s steps so the app feels alive in class / Expo Go.
+ * Health drops only when food === 0 OR water === 0 (after this tick’s drain).
+ */
+const BREED_PROFILES = {
+  golden_retriever: {
+    foodLossPerHour: 5,
+    waterLossPerHour: 7,
+    healthLossPerHourWhenDepleted: 10,
+    demoFoodLossPer10s: 1,
+    demoWaterLossPer10s: 1,
+    demoHealthLossPer10sWhenDepleted: 2,
+  },
+  default: {
+    foodLossPerHour: 5,
+    waterLossPerHour: 5,
+    healthLossPerHourWhenDepleted: 10,
+    demoFoodLossPer10s: 1,
+    demoWaterLossPer10s: 1,
+    demoHealthLossPer10sWhenDepleted: 2,
+  },
+};
+
+function normalizeBreedKey(breed) {
+  if (typeof breed !== 'string') return '';
+  return breed.trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function getBreedProfile(breed) {
+  const key = normalizeBreedKey(breed);
+  return BREED_PROFILES[key] || BREED_PROFILES.default;
+}
+
 function dogDocRef(db, dogId) {
   return db.collection(COLLECTION).doc(dogId.trim());
 }
@@ -24,6 +61,68 @@ function readWater(dog) {
   return Number.isFinite(v) ? v : MAX_STAT;
 }
 
+/**
+ * Pure tick from known values + elapsed ms (shared logic with client `dog-tick-simulation.ts`).
+ */
+function applyTickFromValues(food, water, health, deltaMs, breed, user) {
+  const profile = getBreedProfile(breed);
+  const isDemo = user.is_demo_mode === true;
+  const difficultyMult = user.difficulty_mode === 'hardcore' ? 2 : 1;
+
+  let foodLoss = 0;
+  let waterLoss = 0;
+
+  if (isDemo) {
+    const steps = Math.floor(deltaMs / DEMO_STEP_MS);
+    foodLoss = Math.floor(steps * profile.demoFoodLossPer10s * difficultyMult);
+    waterLoss = Math.floor(steps * profile.demoWaterLossPer10s * difficultyMult);
+  } else {
+    const hours = deltaMs / (1000 * 60 * 60);
+    foodLoss = Math.floor(hours * profile.foodLossPerHour * difficultyMult);
+    waterLoss = Math.floor(hours * profile.waterLossPerHour * difficultyMult);
+  }
+
+  let nextFood = Math.max(0, food - foodLoss);
+  let nextWater = Math.max(0, water - waterLoss);
+  let nextHealth = health;
+
+  if (nextFood === 0 || nextWater === 0) {
+    let healthLoss = 0;
+    if (isDemo) {
+      const steps = Math.floor(deltaMs / DEMO_STEP_MS);
+      healthLoss = Math.floor(steps * profile.demoHealthLossPer10sWhenDepleted * difficultyMult);
+    } else {
+      const hours = deltaMs / (1000 * 60 * 60);
+      healthLoss = Math.floor(hours * profile.healthLossPerHourWhenDepleted * difficultyMult);
+    }
+    nextHealth = Math.max(0, health - healthLoss);
+  }
+
+  const is_sick = nextHealth < 50;
+
+  return {
+    food: nextFood,
+    water: nextWater,
+    health: nextHealth,
+    is_sick,
+  };
+}
+
+function buildTickMeta(breed, userData) {
+  const profile = getBreedProfile(breed);
+  return {
+    demoStepMs: DEMO_STEP_MS,
+    is_demo_mode: userData.is_demo_mode === true,
+    difficulty_hardcore: userData.difficulty_mode === 'hardcore',
+    foodLossPerHour: profile.foodLossPerHour,
+    waterLossPerHour: profile.waterLossPerHour,
+    healthLossPerHourWhenDepleted: profile.healthLossPerHourWhenDepleted,
+    demoFoodLossPer10s: profile.demoFoodLossPer10s,
+    demoWaterLossPer10s: profile.demoWaterLossPer10s,
+    demoHealthLossPer10sWhenDepleted: profile.demoHealthLossPer10sWhenDepleted,
+  };
+}
+
 function applyTickToStats(dog, user, nowTs) {
   let food = readFood(dog);
   let water = readWater(dog);
@@ -35,39 +134,28 @@ function applyTickToStats(dog, user, nowTs) {
   const lastMs = last && typeof last.toMillis === 'function' ? last.toMillis() : nowMs;
   const deltaMs = Math.max(0, nowMs - lastMs);
 
-  const isDemo = user.is_demo_mode === true;
-  let foodLoss = 0;
-  let waterLoss = 0;
-
-  if (isDemo) {
-    const steps = Math.floor(deltaMs / 10000);
-    foodLoss = steps;
-    waterLoss = steps;
-  } else {
-    const hours = deltaMs / (1000 * 60 * 60);
-    const rate = user.difficulty_mode === 'hardcore' ? 2 : 1;
-    const loss = Math.floor(hours * rate);
-    foodLoss = loss;
-    waterLoss = loss;
-  }
-
-  food = Math.max(0, food - foodLoss);
-  water = Math.max(0, water - waterLoss);
-
-  if (food === 0 || water === 0) {
-    const penalty = Math.max(foodLoss, waterLoss, 1);
-    health = Math.max(0, health - penalty);
-  }
-
-  const is_sick = health < 50;
+  const ticked = applyTickFromValues(food, water, health, deltaMs, dog.breed, user);
 
   return {
-    food,
-    water,
-    health,
-    is_sick,
+    ...ticked,
     last_update: nowTs,
   };
+}
+
+/** Min ms between persisting dog stats to Firestore on GET (response still uses live computed values). */
+const PERSIST_STATS_MIN_INTERVAL_MS = 120_000;
+
+function shouldPersistDogDoc(data, nowTs) {
+  const nowMs = nowTs.toMillis();
+  let lastMs = 0;
+  if (data.updatedAt && typeof data.updatedAt.toMillis === 'function') {
+    lastMs = Math.max(lastMs, data.updatedAt.toMillis());
+  }
+  if (data.last_update && typeof data.last_update.toMillis === 'function') {
+    lastMs = Math.max(lastMs, data.last_update.toMillis());
+  }
+  if (lastMs === 0) return true;
+  return nowMs - lastMs >= PERSIST_STATS_MIN_INTERVAL_MS;
 }
 
 function serializeDog(id, data) {
@@ -155,60 +243,40 @@ async function listDogsForUser(userId) {
   const invSnap = await invRef.get();
   const invData = invSnap.exists ? invSnap.data() : { items: {} };
 
-  const emergency = Math.random() < 0.09;
-  let vetBill = 0;
-  let userGold = Number(userData.wallet_gold);
-  if (!Number.isFinite(userGold)) userGold = 0;
-
-  if (emergency) {
-    vetBill = Math.floor(30 + Math.random() * 51);
-    userGold = Math.max(0, userGold - vetBill);
-  }
-
   const batch = db.batch();
   const dogsSerialized = [];
+  let dogBatchWrites = 0;
 
   qSnap.docs.forEach((doc) => {
     const data = doc.data();
     const ticked = applyTickToStats(data, userData, now);
-    batch.update(doc.ref, {
-      food: ticked.food,
-      water: ticked.water,
-      health: ticked.health,
-      is_sick: ticked.is_sick,
-      last_update: ticked.last_update,
-      updatedAt: now,
-    });
+    if (shouldPersistDogDoc(data, now)) {
+      batch.update(doc.ref, {
+        food: ticked.food,
+        water: ticked.water,
+        health: ticked.health,
+        is_sick: ticked.is_sick,
+        last_update: ticked.last_update,
+        updatedAt: now,
+      });
+      dogBatchWrites += 1;
+    }
     const merged = { ...data, ...ticked };
     delete merged.hunger;
     delete merged.thirst;
+    merged.tick_meta = buildTickMeta(merged.breed || 'golden_retriever', userData);
     dogsSerialized.push(serializeDog(doc.id, merged));
   });
 
-  if (emergency) {
-    batch.update(db.collection(userService.COLLECTION).doc(uid), {
-      wallet_gold: userGold,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  }
-
-  if (qSnap.size > 0 || emergency) {
+  if (dogBatchWrites > 0) {
     await batch.commit();
   }
 
-  const freshUser = {
-    ...userData,
-    wallet_gold: emergency ? userGold : Number(userData.wallet_gold) || 0,
-  };
-
-  const event_emergency = emergency
-    ? { vet_bill: vetBill, wallet_gold_after: userGold }
-    : null;
-
-  return buildListResponseDto(uid, freshUser, invData, event_emergency, dogsSerialized);
+  /** Or / gemmes : inchangés ici — seulement shop, interactions, etc. */
+  return buildListResponseDto(uid, userData, invData, null, dogsSerialized, now.toMillis());
 }
 
-function buildListResponseDto(uid, userData, invData, event_emergency, dogsSerialized) {
+function buildListResponseDto(uid, userData, invData, event_emergency, dogsSerialized, serverNowMs) {
   const wallet_gold = Number(userData.wallet_gold) || 0;
   const wallet_gems = Number(userData.wallet_gems) || 0;
   const pseudo = typeof userData.pseudo === 'string' ? userData.pseudo : '';
@@ -217,6 +285,7 @@ function buildListResponseDto(uid, userData, invData, event_emergency, dogsSeria
   return {
     userId: uid,
     uid,
+    server_now_ms: typeof serverNowMs === 'number' ? serverNowMs : Date.now(),
     pseudo,
     wallet_gold,
     wallet_gems,
@@ -256,10 +325,16 @@ module.exports = {
   listDogsForUser,
   markAbandonment,
   applyTickToStats,
+  applyTickFromValues,
+  buildTickMeta,
   readFood,
   readWater,
+  getBreedProfile,
+  BREED_PROFILES,
   dogDocRef,
   COLLECTION,
   MAX_STAT,
+  DEMO_STEP_MS,
+  PERSIST_STATS_MIN_INTERVAL_MS,
   serializeDog,
 };

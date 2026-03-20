@@ -130,10 +130,18 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
 
 **Corps typique (succès)** :
 
+Champs utiles pour le **client** (simulation fluide entre requêtes) :
+
+- **`server_now_ms`** : horloge serveur (ms depuis epoch) au moment de la réponse — pour aligner le décompte local.
+- Chaque chien inclut **`tick_meta`** : paramètres de perte (race + `is_demo_mode` + `hardcore`) — **à garder en sync** avec `dogService.applyTickFromValues`.
+
+Persistance Firestore : les stats chien ne sont **écrites** qu’environ **toutes les 2 minutes** si seul `GET /dogs` est utilisé ; la réponse JSON contient toujours l’état **calculé** à l’instant `server_now_ms`.
+
 ```json
 {
   "userId": "proto-sirius-user-001",
   "uid": "proto-sirius-user-001",
+  "server_now_ms": 1710932400123,
   "pseudo": "Joueur1",
   "wallet_gold": 500,
   "wallet_gems": 50,
@@ -156,15 +164,30 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
       "water": 95,
       "health": 100,
       "is_sick": false,
-      "last_update": "2026-03-20T10:00:00.000Z"
+      "last_update": "2026-03-20T10:00:00.000Z",
+      "tick_meta": {
+        "demoStepMs": 10000,
+        "is_demo_mode": false,
+        "difficulty_hardcore": false,
+        "foodLossPerHour": 5,
+        "waterLossPerHour": 7,
+        "healthLossPerHourWhenDepleted": 10,
+        "demoFoodLossPer10s": 1,
+        "demoWaterLossPer10s": 1,
+        "demoHealthLossPer10sWhenDepleted": 2
+      }
     }
   ]
 }
 ```
 
-`event_emergency` peut être **`{ "vet_bill": number, "wallet_gold_after": number }`** (tirage **9 %** par requête, un seul tirage par appel).
+`event_emergency` est réservé pour des événements futurs ; **`GET /dogs/:userId` ne modifie pas** `wallet_gold` ni `wallet_gems` (pas de frais aléatoires au rafraîchissement).
 
-**Tick** (rappel) : démo = **−1 `food`** et **−1 `water`** toutes les **10 s** ; sinon −1/heure chacun, **×2** en `hardcore` ; si **food** ou **water** = 0, pénalité santé ; `is_sick` si santé &lt; 50.
+**Tick** (rappel) : à chaque **`GET /dogs/:userId`**, le serveur applique le temps écoulé depuis **`last_update`**.
+- **Par race** (`breed`, ex. `golden_retriever`) : vitesses de perte **`food`** / **`water`** (points / heure en mode normal ; par pas de **10 s** en `is_demo_mode`). **`hardcore`** double ces pertes.
+- **Golden retriever** (exemple) : ~**5** nourriture/h, ~**7** eau/h ; autres races utilisent le profil **`default`** jusqu’à extension.
+- **Santé** : ne baisse **que** si, **après** ce tick, **`food === 0` ou `water === 0`** (perte santé proportionnelle au temps écoulé dans ce cas).
+- **`is_sick`** : `true` si santé &lt; 50 après règles métier.
 
 ---
 
