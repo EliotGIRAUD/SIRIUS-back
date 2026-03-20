@@ -2,7 +2,7 @@ const dogService = require('../services/dogService');
 
 async function initDog(req, res) {
   try {
-    const chien = await dogService.initChien();
+    const chien = await dogService.initChien(req.body || {});
     res.status(201).json(chien);
   } catch (error) {
     res.status(500).json({ error: error.message });
