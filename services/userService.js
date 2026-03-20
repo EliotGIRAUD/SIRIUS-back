@@ -6,7 +6,8 @@ const DEFAULT_USER = {
   wallet_gold: 500,
   wallet_gems: 50,
   difficulty_mode: 'normal',
-  is_demo_mode: false,
+  /** Faster tick for class / UX; set false in Firestore for “real” hourly decay. */
+  is_demo_mode: true,
   unlocked_breeds: ['golden_retriever'],
 };
 
