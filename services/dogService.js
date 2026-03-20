@@ -14,4 +14,11 @@ async function initChien() {
   return DEFAULT_CHIEN;
 }
 
-module.exports = { initChien };
+async function getChien() {
+  const db = admin.firestore();
+  const snap = await db.collection('chien').doc('chien').get();
+  if (!snap.exists) return null;
+  return snap.data();
+}
+
+module.exports = { initChien, getChien };
