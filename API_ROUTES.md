@@ -19,7 +19,8 @@
 ## Firestore : schéma et règles
 
 - **`users/{uid}`** : `uid`, `pseudo`, `wallet_gold`, `wallet_gems`, `difficulty_mode`, `is_demo_mode`, `unlocked_breeds`, horodatage éventuel.
-- **`dogs/{id}`** : `id` généré par Firestore ; `ownerId`, `name`, `breed`, `hunger`, `health`, `thirst`, `is_sick`, `last_update`, `abandonment_pending_video`, `abandonment_marked_at`, etc.
+- **`dogs/{id}`** : `id` généré par Firestore ; `ownerId`, `name`, `breed`, **`food`**, **`water`**, `health`, `is_sick`, `last_update`, `abandonment_pending_video`, `abandonment_marked_at`, etc.  
+  **`food` / `water`** : **100 = plein** ; le tick **décrémente** vers 0 (plus le chien manque de nourriture / d’eau). Anciens champs `hunger` / `thirst` encore lus une fois pour compat migration.
 - **`inventory/{ownerId}`** : `ownerId`, `items` : `{ "croquettes": number, "water_bottle": number }`.
 
 **Accès aux données** : cette API utilise le **SDK Admin** (`firebase-admin`) : elle **contourne** les règles de sécurité Firestore côté serveur.  
@@ -49,7 +50,7 @@ Chaque élément est sérialisé avec au minimum :
 | `ownerId` | string | Propriétaire (= `userId` / `uid`). |
 | `name` | string | Nom du chien. |
 | `breed` | string | Race (identifiant snake_case côté stockage). |
-| `hunger`, `thirst`, `health` | number | Stats courantes (après tick). |
+| `food`, `water`, `health` | number | Après tick : **food** / **water** = 100 plein → 0 vide ; **health** = santé. |
 | `is_sick` | boolean | `true` si santé &lt; 50 après règles métier. |
 | `last_update` | string ISO | Moment de référence du tick. |
 | `abandonment_pending_video` | boolean | Si abandon signalé. |
@@ -109,7 +110,7 @@ Comportement : met à jour ou crée **`users/{uid}`** ; complète les champs éc
 **Réponses**
 
 - **201** : chien créé ; contient **`id`** (ID Firestore). Exemple :  
-  `{"id":"abc123","ownerId":"proto-sirius-user-001","name":"Rex","breed":"golden_retriever","hunger":100,"health":100,"thirst":100,...}`
+  `{"id":"abc123","ownerId":"proto-sirius-user-001","name":"Rex","breed":"golden_retriever","food":100,"water":100,"health":100,...}`
 - **404** : utilisateur **`users/{userId}`** introuvable (login requis avant).
 - **400** : `name` ou `userId` manquant.
 - **500** : erreur serveur.
@@ -151,8 +152,8 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
       "ownerId": "proto-sirius-user-001",
       "name": "Rex",
       "breed": "golden_retriever",
-      "hunger": 95,
-      "thirst": 95,
+      "food": 95,
+      "water": 95,
       "health": 100,
       "is_sick": false,
       "last_update": "2026-03-20T10:00:00.000Z"
@@ -163,7 +164,7 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
 
 `event_emergency` peut être **`{ "vet_bill": number, "wallet_gold_after": number }`** (tirage **9 %** par requête, un seul tirage par appel).
 
-**Tick** (rappel) : démo = −1 faim et −1 soif toutes les **10 s** écoulées ; sinon −1/heure chacun, **×2** en `hardcore` ; si faim ou soif &lt; 10, pénalité santé ; `is_sick` si santé &lt; 50.
+**Tick** (rappel) : démo = **−1 `food`** et **−1 `water`** toutes les **10 s** ; sinon −1/heure chacun, **×2** en `hardcore` ; si **food** ou **water** &lt; 10, pénalité santé ; `is_sick` si santé &lt; 50.
 
 ---
 
@@ -216,7 +217,7 @@ Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(u
 **Réponses**
 
 - **200** : ex.  
-  `{"dogId":"...","hunger":100,"items":{"croquettes":1,"water_bottle":1}}`
+  `{"dogId":"...","food":100,"items":{"croquettes":1,"water_bottle":1}}`
 - **400** : `userId` ou `dogId` manquant ; pas de croquettes.
 - **403** : **`ownerId`** du chien ≠ `userId`.
 - **404** : chien ou inventaire introuvable.
@@ -326,7 +327,7 @@ Exécutée contre une instance locale sur **`PORT=3010`** (le port **3001** peut
 | POST `/init-dog` | 201 + `id` auto | OK |
 | GET `/dogs/:uid` | 200, `dogs.length >= 1` | OK |
 | POST `/shop/buy` (user valide) | 200, or diminué | OK |
-| PATCH `/interact/feed` | 200, faim = 100 | OK |
+| PATCH `/interact/feed` | 200, **`food`** = 100 | OK |
 | PATCH `/interact/clean` | 200, `wallet_gold_delta` = 5 | OK |
 | PATCH `/walk/validate` (2 km / 3600 s) | vitesse 2 km/h, crédit `floor(16)` | OK |
 | POST `/dog/:id/abandon` | 200, `abandonment_pending_video` true | OK |

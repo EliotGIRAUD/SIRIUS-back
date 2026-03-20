@@ -37,13 +37,13 @@ async function feedDog(userId, dogId) {
 
     tx.update(iRef, { items, updatedAt: now });
     tx.update(dRef, {
-      hunger: dogService.MAX_STAT,
+      food: dogService.MAX_STAT,
       updatedAt: now,
     });
 
     return {
       dogId: did,
-      hunger: dogService.MAX_STAT,
+      food: dogService.MAX_STAT,
       items,
     };
   });
