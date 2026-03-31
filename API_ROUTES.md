@@ -14,7 +14,6 @@
 | `GOOGLE_APPLICATION_CREDENTIALS` | Chemin relatif ou absolu vers le JSON du compte de service Firebase (voir `config/firebase.js`). |
 | `DATABASE_URL` | URL base temps réel Firebase si utilisée par la config Admin (optionnel selon projet). |
 | `CORS_ORIGINS` | Liste séparée par des **virgules** d’origines autorisées. Si **vide ou absent** : **toutes** les origines sont acceptées (pratique dev mobile, **à restreindre en prod**). |
-| `PROTOTYPE_FIXED_UID` | UID renvoyé par `POST /auth/login` (défaut **`proto-sirius-user-001`**). |
 
 ## Firestore : schéma et règles
 
@@ -30,15 +29,19 @@ Les règles `firestore.rules` du dépôt ont été verrouillées pour `users`, `
 
 | Méthode | Chemin | Fichier route |
 |---------|--------|---------------|
+| POST | `/auth/register` | `routes/authRoutes.js` |
 | POST | `/auth/login` | `routes/authRoutes.js` |
 | POST | `/init-dog` | `routes/dogRoutes.js` |
 | GET | `/dogs/:userId` | `routes/dogRoutes.js` |
 | POST | `/dog/:id/abandon` | `routes/dogRoutes.js` |
 | POST | `/shop/buy` | `routes/shopRoutes.js` |
+| POST | `/shop/buy-skin` | `routes/shopRoutes.js` |
 | POST | `/shop/unlock-breed` | `routes/shopRoutes.js` |
+| PATCH | `/user/settings` | `routes/userRoutes.js` |
 | PATCH | `/interact/feed` | `routes/interactRoutes.js` |
 | PATCH | `/interact/clean` | `routes/interactRoutes.js` |
 | PATCH | `/walk/validate` | `routes/interactRoutes.js` |
+| PATCH | `/dog/:id/equip-skin` | `routes/dogRoutes.js` |
 
 ## Objet « chien » dans `GET /dogs/:userId` (`dogs[]`)
 
@@ -75,6 +78,13 @@ Chaque élément est sérialisé avec au minimum :
 
 Alias body : `produit` pour `item` ; `race` pour `breed` (normalisé en snake_case côté serveur).
 
+**Gemmes (`wallet_gems`)** — `POST /shop/buy-skin` :
+
+| `skinId` | Coût (gemmes) |
+|----------|----------------|
+| `skin_space` | 80 |
+| `skin_neon` | 120 |
+
 ---
 
 ## `POST /auth/login`
@@ -83,19 +93,60 @@ Alias body : `produit` pour `item` ; `race` pour `breed` (normalisé en snake_ca
 
 | Champ | Type | Obligatoire |
 |-------|------|-------------|
-| `pseudo` | string | oui |
+| `idToken` | string | oui |
+| `pseudo` | string | non (par défaut : pseudo existant, sinon email Firebase) |
 
 **Réponses**
 
 - **200** : exemple  
-  `{"uid":"proto-sirius-user-001","pseudo":"Joueur1","message":"Connexion simulée (prototype Jalon 1)"}`  
-  (`uid` = `PROTOTYPE_FIXED_UID` ou valeur `.env`.)
-- **400** : pseudo absent ou vide.
+  `{"uid":"k7d...","pseudo":"Joueur1","message":"Connexion Firebase validée"}`
+- **400** : idToken absent ou vide.
+- **401** : token invalide.
 - **500** : erreur serveur / Firebase.
 
-Comportement : met à jour ou crée **`users/{uid}`** ; complète les champs économie s’ils manquaient (voir `userService`).
+Comportement : vérifie `idToken` Firebase, puis met à jour/crée **`users/{uid}`** ; complète les champs économie s’ils manquaient (voir `userService`).
 
 ---
+
+## `POST /auth/register`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `idToken` | string | oui |
+| `pseudo` | string | non (par défaut : email Firebase) |
+
+**Réponses**
+
+- **200** : `{"uid":"k7d...","pseudo":"Joueur1","message":"Profil utilisateur créé/initialisé"}`
+- **400** : idToken absent ou vide.
+- **401** : token invalide.
+- **500** : erreur serveur / Firebase.
+
+Comportement : identique à `POST /auth/login`, utilisé après création du compte côté Firebase.
+
+---
+
+## `PATCH /user/settings`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `difficulty_mode` | string | non (`normal` \| `hardcore`) |
+| `is_demo_mode` | boolean | non |
+
+**Réponses**
+
+- **200** : ex.  
+  `{"uid":"...","pseudo":"Joueur1","wallet_gold":500,"wallet_gems":50,"difficulty_mode":"hardcore","is_demo_mode":false,"unlocked_breeds":["golden_retriever"],"...":"..."}`
+- **400** : `userId` manquant ; `difficulty_mode` invalide ; `is_demo_mode` non booléen.
+- **404** : utilisateur introuvable.
+- **500** : erreur serveur.
+
+Comportement : met à jour les réglages de difficulté du profil utilisateur (`users/{uid}`).
 
 ## `POST /init-dog`
 
@@ -228,6 +279,24 @@ Persistance Firestore : les stats chien ne sont **écrites** qu’environ **tout
 
 ---
 
+## `POST /shop/buy-skin`
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `skinId` | string | oui (`skin_space` \| `skin_neon`) |
+
+**Réponses**
+
+- **200** : ex.  
+  `{"wallet_gems":20,"spent_gems":80,"unlocked_skins":["skin_space"],"skinId":"skin_space"}`
+- **400** : `userId` / `skinId` manquant ; skin inconnu ; gemmes insuffisantes ; skin déjà débloqué.
+- **404** : utilisateur introuvable.
+
+---
+
 ## `PATCH /interact/feed`
 
 **Body**
@@ -308,6 +377,28 @@ Interaction type **gyroscope** (« ramasser les besoins ») : crédit fixe **+5*
 
 ---
 
+## `PATCH /dog/:id/equip-skin`
+
+Équipe un skin sur un chien (champ `active_skin_id` sur `dogs/{id}`).
+
+**Paramètre** : `id` = **`id`** Firestore du chien.
+
+**Body**
+
+| Champ | Type | Obligatoire |
+|-------|------|-------------|
+| `userId` | string | oui |
+| `skinId` | string | oui |
+
+**Réponses**
+
+- **200** : ex. `{"dogId":"...","active_skin_id":"skin_space"}`
+- **400** : `userId` manquant ; `skinId` manquant.
+- **403** : chien n’appartient pas au user ; skin non possédé.
+- **404** : chien ou utilisateur introuvable.
+
+---
+
 ## CORS
 
 Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_ORIGINS`** est renseigné, seules ces origines (et requêtes **sans** header `Origin`) passent ; sinon **tout** est autorisé.
@@ -316,14 +407,15 @@ Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_OR
 
 ## Flux conseillé (intégration front)
 
-1. `POST /auth/login` → conserver **`uid`**.
+1. `POST /auth/register` (inscription) puis `POST /auth/login` (connexion) avec **`idToken` Firebase** → conserver **`uid`**.
 2. `POST /init-dog` avec **`userId: uid`** → conserver **`id`** du chien (répéter pour plusieurs chiens).
-3. `GET /dogs/{uid}` pour l’écran principal (liste **`dogs`**, wallets, inventaire).
-4. `POST /shop/buy` / `unlock-breed` avec **`userId: uid`**.
-5. `PATCH /interact/feed` avec **`userId`** + **`dogId`**.
-6. `PATCH /interact/clean` avec **`userId`**.
-7. `PATCH /walk/validate` avec **`userId`** + distance/durée.
-8. `POST /dog/{id}/abandon` si besoin.
+3. `PATCH /user/settings` pour choisir `difficulty_mode` / `is_demo_mode` (profil).
+4. `GET /dogs/{uid}` pour l’écran principal (liste **`dogs`**, wallets, inventaire).
+5. `POST /shop/buy` (or) / `POST /shop/buy-skin` (gemmes) / `unlock-breed` avec **`userId: uid`**.
+6. `PATCH /interact/feed` avec **`userId`** + **`dogId`**.
+7. `PATCH /interact/clean` avec **`userId`**.
+8. `PATCH /walk/validate` avec **`userId`** + distance/durée.
+9. `POST /dog/{id}/abandon` si besoin.
 
 ---
 
@@ -331,7 +423,7 @@ Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_OR
 
 L’API **ne vérifie pas de jeton** (pas de JWT / session) : toute requête peut fournir un **`userId` quelconque** dans l’URL ou le body. Qui connaît ou devine un `userId` peut lire **`GET /dogs/:userId`**, dépenser l’or, appeler **clean** / **walk** / **shop**, etc. (**IDOR**).
 
-- **`POST /auth/login`** renvoie un **uid fixe** (ou depuis `.env`) : ce n’est **pas** une authentification forte.
+- **`POST /auth/login`** vérifie l’**`idToken` Firebase** et renvoie un **uid réel** (pas d’UID prototype fixe).
 - **`POST /dog/:id/abandon`** ne vérifie **pas** que l’appelant est le propriétaire du chien.
 - **clean** et **walk** peuvent être **spamés** (pas de rate limiting).
 - En prod : restreindre **CORS**, ajouter **auth** (ex. vérifier un ID token Firebase et **ignorer** ou **contrôler** le `userId` du body), **rate limiting**, et renforcer **abandon**.

@@ -320,6 +320,68 @@ async function markAbandonment(dogId) {
   return { id: dogId, abandonment_pending_video: true };
 }
 
+async function equipSkin(ownerId, dogId, skinId) {
+  const uid = typeof ownerId === 'string' ? ownerId.trim() : '';
+  const did = typeof dogId === 'string' ? dogId.trim() : '';
+  const sid = typeof skinId === 'string' ? skinId.trim() : '';
+  if (!uid) {
+    const err = new Error('userId invalide');
+    err.status = 400;
+    throw err;
+  }
+  if (!did) {
+    const err = new Error('dogId invalide');
+    err.status = 400;
+    throw err;
+  }
+  if (!sid) {
+    const err = new Error('skinId requis');
+    err.status = 400;
+    throw err;
+  }
+
+  const db = admin.firestore();
+  const dRef = dogDocRef(db, did);
+  const uRef = db.collection(userService.COLLECTION).doc(uid);
+
+  return db.runTransaction(async (tx) => {
+    const [dSnap, uSnap] = await Promise.all([tx.get(dRef), tx.get(uRef)]);
+    if (!dSnap.exists) {
+      const err = new Error('Chien introuvable');
+      err.status = 404;
+      throw err;
+    }
+    if (!uSnap.exists) {
+      const err = new Error('Utilisateur introuvable');
+      err.status = 404;
+      throw err;
+    }
+
+    const dog = dSnap.data();
+    if (dog.ownerId !== uid) {
+      const err = new Error('Interdit');
+      err.status = 403;
+      throw err;
+    }
+
+    const u = uSnap.data();
+    const unlocked = Array.isArray(u.unlocked_skins) ? u.unlocked_skins : [];
+    if (!unlocked.includes(sid) && sid !== 'skin_default') {
+      const err = new Error('Skin non possédé');
+      err.status = 403;
+      throw err;
+    }
+
+    const now = admin.firestore.Timestamp.now();
+    tx.update(dRef, {
+      active_skin_id: sid,
+      updatedAt: now,
+    });
+
+    return { dogId: did, active_skin_id: sid };
+  });
+}
+
 module.exports = {
   initDog,
   listDogsForUser,
@@ -331,6 +393,7 @@ module.exports = {
   readWater,
   getBreedProfile,
   BREED_PROFILES,
+  equipSkin,
   dogDocRef,
   COLLECTION,
   MAX_STAT,

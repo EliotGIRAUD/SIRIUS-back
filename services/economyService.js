@@ -13,6 +13,12 @@ const BREED_GEM_COST = {
   berger_allemand: 200,
 };
 
+const SKIN_GEM_COST = {
+  skin_default: 0,
+  skin_space: 80,
+  skin_neon: 120,
+};
+
 function err(msg, status) {
   const e = new Error(msg);
   e.status = status;
@@ -118,4 +124,49 @@ async function shopUnlockBreed(ownerId, body = {}) {
   });
 }
 
-module.exports = { shopBuy, shopUnlockBreed, PRICES_GOLD, BREED_GEM_COST };
+async function shopBuySkin(ownerId, body = {}) {
+  const uid = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!uid) throw err('ownerId invalide', 400);
+
+  const skinRaw = body.skinId != null ? body.skinId : body.skin_id;
+  const skinId = typeof skinRaw === 'string' ? skinRaw.trim() : '';
+  if (!skinId) throw err('skinId requis', 400);
+
+  const cost = SKIN_GEM_COST[skinId];
+  if (cost == null) throw err('skin inconnu ou non achetable', 400);
+  if (cost <= 0) throw err('skin gratuit non achetable', 400);
+
+  const db = admin.firestore();
+  const uRef = db.collection(userService.COLLECTION).doc(uid);
+
+  return db.runTransaction(async (tx) => {
+    const uSnap = await tx.get(uRef);
+    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
+
+    const u = uSnap.data();
+    const gems = Number(u.wallet_gems);
+    const safeGems = Number.isFinite(gems) ? gems : 0;
+    if (safeGems < cost) throw err('Gemmes insuffisantes', 400);
+
+    const unlocked = Array.isArray(u.unlocked_skins) ? [...u.unlocked_skins] : [];
+    if (unlocked.includes(skinId)) throw err('Skin déjà débloqué', 400);
+
+    unlocked.push(skinId);
+    const nextGems = safeGems - cost;
+
+    tx.update(uRef, {
+      wallet_gems: nextGems,
+      unlocked_skins: unlocked,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      wallet_gems: nextGems,
+      spent_gems: cost,
+      unlocked_skins: unlocked,
+      skinId,
+    };
+  });
+}
+
+module.exports = { shopBuy, shopUnlockBreed, shopBuySkin, PRICES_GOLD, BREED_GEM_COST, SKIN_GEM_COST };
