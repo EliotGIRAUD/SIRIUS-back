@@ -234,7 +234,7 @@ Persistance Firestore : les stats chien ne sont **écrites** qu’environ **tout
 
 `event_emergency` est réservé pour des événements futurs ; **`GET /dogs/:userId` ne modifie pas** `wallet_gold` ni `wallet_gems` (pas de frais aléatoires au rafraîchissement).
 
-**Tick** (rappel) : à chaque **`GET /dogs/:userId`**, le serveur applique le temps écoulé depuis **`last_update`**.
+**Tick** (rappel) : à chaque **`GET /dogs/:userId`**, le serveur applique le temps écoulé depuis **`last_update`**. La perte est **continue** (pas seulement par blocs entiers de pas démo), pour coller au client qui affiche la décroissance seconde par seconde.
 - **Par race** (`breed`, ex. `golden_retriever`) : vitesses de perte **`food`** / **`water`** (points / heure en mode normal ; par pas de **10 s** en `is_demo_mode`). **`hardcore`** double ces pertes.
 - **Golden retriever** (exemple) : ~**5** nourriture/h, ~**7** eau/h ; autres races utilisent le profil **`default`** jusqu’à extension.
 - **Santé** : ne baisse **que** si, **après** ce tick, **`food === 0` ou `water === 0`** (perte santé proportionnelle au temps écoulé dans ce cas).

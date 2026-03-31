@@ -64,47 +64,46 @@ function readWater(dog) {
 /**
  * Pure tick from known values + elapsed ms (shared logic with client `dog-tick-simulation.ts`).
  */
+/**
+ * Continuous drain in “demo step units” or hours so the UI can tick every second
+ * without waiting for full floor(Δt / step) blocks (matches client simulation).
+ */
 function applyTickFromValues(food, water, health, deltaMs, breed, user) {
   const profile = getBreedProfile(breed);
   const isDemo = user.is_demo_mode === true;
   const difficultyMult = user.difficulty_mode === 'hardcore' ? 2 : 1;
+  const d = Math.max(0, deltaMs);
 
-  let foodLoss = 0;
-  let waterLoss = 0;
-
+  let nextFood;
+  let nextWater;
   if (isDemo) {
-    const steps = Math.floor(deltaMs / DEMO_STEP_MS);
-    foodLoss = Math.floor(steps * profile.demoFoodLossPer10s * difficultyMult);
-    waterLoss = Math.floor(steps * profile.demoWaterLossPer10s * difficultyMult);
+    const u = d / DEMO_STEP_MS;
+    nextFood = Math.max(0, Math.floor(food - u * profile.demoFoodLossPer10s * difficultyMult + 1e-9));
+    nextWater = Math.max(0, Math.floor(water - u * profile.demoWaterLossPer10s * difficultyMult + 1e-9));
   } else {
-    const hours = deltaMs / (1000 * 60 * 60);
-    foodLoss = Math.floor(hours * profile.foodLossPerHour * difficultyMult);
-    waterLoss = Math.floor(hours * profile.waterLossPerHour * difficultyMult);
+    const foodLoss = Math.floor((d / (1000 * 60 * 60)) * profile.foodLossPerHour * difficultyMult);
+    const waterLoss = Math.floor((d / (1000 * 60 * 60)) * profile.waterLossPerHour * difficultyMult);
+    nextFood = Math.max(0, food - foodLoss);
+    nextWater = Math.max(0, water - waterLoss);
   }
 
-  let nextFood = Math.max(0, food - foodLoss);
-  let nextWater = Math.max(0, water - waterLoss);
   let nextHealth = health;
-
   if (nextFood === 0 || nextWater === 0) {
-    let healthLoss = 0;
     if (isDemo) {
-      const steps = Math.floor(deltaMs / DEMO_STEP_MS);
-      healthLoss = Math.floor(steps * profile.demoHealthLossPer10sWhenDepleted * difficultyMult);
+      const u = d / DEMO_STEP_MS;
+      const lost = u * profile.demoHealthLossPer10sWhenDepleted * difficultyMult;
+      nextHealth = Math.max(0, Math.floor(health - lost + 1e-9));
     } else {
-      const hours = deltaMs / (1000 * 60 * 60);
-      healthLoss = Math.floor(hours * profile.healthLossPerHourWhenDepleted * difficultyMult);
+      const healthLoss = Math.floor((d / (1000 * 60 * 60)) * profile.healthLossPerHourWhenDepleted * difficultyMult);
+      nextHealth = Math.max(0, health - healthLoss);
     }
-    nextHealth = Math.max(0, health - healthLoss);
   }
-
-  const is_sick = nextHealth < 50;
 
   return {
     food: nextFood,
     water: nextWater,
     health: nextHealth,
-    is_sick,
+    is_sick: nextHealth < 50,
   };
 }
 
