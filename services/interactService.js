@@ -50,6 +50,47 @@ async function feedDog(userId, dogId) {
   });
 }
 
+async function giveWater(userId, dogId) {
+  const uid = typeof userId === 'string' ? userId.trim() : '';
+  const did = typeof dogId === 'string' ? dogId.trim() : '';
+  if (!uid) throw err('userId invalide', 400);
+  if (!did) throw err('dogId requis', 400);
+
+  const db = admin.firestore();
+  const dRef = dogService.dogDocRef(db, did);
+  const iRef = inventoryService.inventoryRef(db, uid);
+
+  return db.runTransaction(async (tx) => {
+    const [dSnap, iSnap] = await Promise.all([tx.get(dRef), tx.get(iRef)]);
+    if (!dSnap.exists) throw err('Chien introuvable', 404);
+    if (!iSnap.exists) throw err('Inventaire introuvable', 404);
+
+    const dog = dSnap.data();
+    if (dog.ownerId !== uid) throw err('Interdit', 403);
+
+    const items = inventoryService.normalizeItems(iSnap.data().items);
+    const n = Number(items.water_bottle);
+    const waterBottle = Number.isFinite(n) ? n : 0;
+    if (waterBottle < 1) throw err("Pas d'eau", 400);
+
+    items.water_bottle = waterBottle - 1;
+    const now = admin.firestore.Timestamp.now();
+
+    tx.update(iRef, { items, updatedAt: now });
+    tx.update(dRef, {
+      water: dogService.MAX_STAT,
+      last_update: now,
+      updatedAt: now,
+    });
+
+    return {
+      dogId: did,
+      water: dogService.MAX_STAT,
+      items,
+    };
+  });
+}
+
 const CLEAN_GOLD_REWARD = 5;
 
 async function cleanNeeds(userId) {
@@ -131,4 +172,4 @@ async function validateWalk(ownerId, body = {}) {
   return out;
 }
 
-module.exports = { feedDog, cleanNeeds, validateWalk, CLEAN_GOLD_REWARD };
+module.exports = { feedDog, giveWater, cleanNeeds, validateWalk, CLEAN_GOLD_REWARD };

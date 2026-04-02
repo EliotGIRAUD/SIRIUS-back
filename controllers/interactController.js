@@ -35,6 +35,26 @@ async function clean(req, res) {
   }
 }
 
+async function water(req, res) {
+  try {
+    const ownerId = typeof req.body.userId === 'string' ? req.body.userId.trim() : '';
+    const dogId = typeof req.body.dogId === 'string' ? req.body.dogId.trim() : '';
+    if (!ownerId) {
+      res.status(400).json({ error: 'userId requis dans le body' });
+      return;
+    }
+    if (!dogId) {
+      res.status(400).json({ error: 'dogId requis dans le body' });
+      return;
+    }
+    const out = await interactService.giveWater(ownerId, dogId);
+    res.status(200).json(out);
+  } catch (error) {
+    const status = error.status || 500;
+    res.status(status).json({ error: error.message });
+  }
+}
+
 async function validateWalk(req, res) {
   try {
     const ownerId = typeof req.body.userId === 'string' ? req.body.userId.trim() : '';
@@ -50,4 +70,4 @@ async function validateWalk(req, res) {
   }
 }
 
-module.exports = { feed, clean, validateWalk };
+module.exports = { feed, water, clean, validateWalk };
