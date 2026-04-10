@@ -1,4 +1,4 @@
-const admin = require('../config/firebase');
+const { pool } = require('../db');
 
 const COLLECTION = 'inventory';
 
@@ -16,18 +16,12 @@ function normalizeItems(items) {
 }
 
 async function ensureInventory(ownerId) {
-  const db = admin.firestore();
   const id = ownerId.trim();
-  const ref = db.collection(COLLECTION).doc(id);
-  const snap = await ref.get();
-  if (snap.exists) return;
-  const now = admin.firestore.Timestamp.now();
-  await ref.set({
-    ownerId: id,
-    items: { ...DEFAULT_ITEMS },
-    createdAt: now,
-    updatedAt: now,
-  });
+  await pool.execute(
+    `INSERT IGNORE INTO inventory (owner_id, croquettes, water_bottle, created_at, updated_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))`,
+    [id, DEFAULT_ITEMS.croquettes, DEFAULT_ITEMS.water_bottle]
+  );
 }
 
 async function createInventory(ownerId) {
@@ -37,25 +31,25 @@ async function createInventory(ownerId) {
 
 async function getInventoryByOwner(ownerId) {
   if (!ownerId || typeof ownerId !== 'string') return null;
-  const db = admin.firestore();
-  const snap = await db.collection(COLLECTION).doc(ownerId.trim()).get();
-  if (!snap.exists) return null;
-  const d = snap.data();
+  const [rows] = await pool.execute(
+    'SELECT * FROM inventory WHERE owner_id = ? LIMIT 1',
+    [ownerId.trim()]
+  );
+  if (!rows.length) return null;
+  const d = rows[0];
   return {
-    ownerId: d.ownerId || ownerId.trim(),
-    items: normalizeItems(d.items),
+    ownerId: d.owner_id || ownerId.trim(),
+    items: normalizeItems({
+      croquettes: d.croquettes,
+      water_bottle: d.water_bottle,
+    }),
   };
-}
-
-function inventoryRef(db, ownerId) {
-  return db.collection(COLLECTION).doc(ownerId.trim());
 }
 
 module.exports = {
   createInventory,
   ensureInventory,
   getInventoryByOwner,
-  inventoryRef,
   normalizeItems,
   DEFAULT_ITEMS,
   COLLECTION,

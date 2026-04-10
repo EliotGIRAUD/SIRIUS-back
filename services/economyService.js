@@ -1,4 +1,4 @@
-const admin = require('../config/firebase');
+const { withTransaction } = require('../db');
 const userService = require('./userService');
 const inventoryService = require('./inventoryService');
 
@@ -39,36 +39,43 @@ async function shopBuy(ownerId, body = {}) {
   const unit = PRICES_GOLD[item];
   if (unit == null) throw err('article inconnu (croquettes | water_bottle)', 400);
 
-  const db = admin.firestore();
-  const uRef = db.collection(userService.COLLECTION).doc(uid);
-  const iRef = inventoryService.inventoryRef(db, uid);
+  const cost = Number(unit) * qty;
 
-  return db.runTransaction(async (tx) => {
-    const [uSnap, iSnap] = await Promise.all([tx.get(uRef), tx.get(iRef)]);
-    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
-    if (!iSnap.exists) throw err('Inventaire introuvable', 404);
+  return withTransaction(async (conn) => {
+    const [uRows] = await conn.execute(
+      'SELECT * FROM users WHERE uid = ? FOR UPDATE',
+      [uid]
+    );
+    const [iRows] = await conn.execute(
+      'SELECT * FROM inventory WHERE owner_id = ? FOR UPDATE',
+      [uid]
+    );
+    if (!uRows.length) throw err('Utilisateur introuvable', 404);
+    if (!iRows.length) throw err('Inventaire introuvable', 404);
 
-    const u = uSnap.data();
+    const u = userService.rowToUser(uid, uRows[0]);
     const gold = Number(u.wallet_gold);
     const safeGold = Number.isFinite(gold) ? gold : 0;
-    const cost = Number(unit) * qty;
     if (safeGold < cost) throw err('Solde insuffisant', 400);
 
-    const items = inventoryService.normalizeItems(iSnap.data().items);
+    const ir = iRows[0];
+    const items = inventoryService.normalizeItems({
+      croquettes: ir.croquettes,
+      water_bottle: ir.water_bottle,
+    });
     if (item === 'croquettes') items.croquettes += qty;
     else if (item === 'water_bottle') items.water_bottle += qty;
 
     const nextGold = safeGold - cost;
-    const now = admin.firestore.Timestamp.now();
 
-    tx.update(uRef, {
-      wallet_gold: nextGold,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    tx.update(iRef, {
-      items,
-      updatedAt: now,
-    });
+    await conn.execute(
+      'UPDATE users SET wallet_gold = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE uid = ?',
+      [nextGold, uid]
+    );
+    await conn.execute(
+      `UPDATE inventory SET croquettes = ?, water_bottle = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE owner_id = ?`,
+      [items.croquettes, items.water_bottle, uid]
+    );
 
     return {
       wallet_gold: nextGold,
@@ -85,20 +92,23 @@ async function shopUnlockBreed(ownerId, body = {}) {
   if (!uid) throw err('ownerId invalide', 400);
 
   const breedRaw = body.breed != null ? body.breed : body.race;
-  const breed = typeof breedRaw === 'string' ? breedRaw.trim().toLowerCase().replace(/\s+/g, '_') : '';
+  const breed =
+    typeof breedRaw === 'string'
+      ? breedRaw.trim().toLowerCase().replace(/\s+/g, '_')
+      : '';
   if (!breed) throw err('breed requis', 400);
 
   const cost = BREED_GEM_COST[breed];
   if (cost == null) throw err('race non achetable ou inconnue', 400);
 
-  const db = admin.firestore();
-  const uRef = db.collection(userService.COLLECTION).doc(uid);
+  return withTransaction(async (conn) => {
+    const [uRows] = await conn.execute(
+      'SELECT * FROM users WHERE uid = ? FOR UPDATE',
+      [uid]
+    );
+    if (!uRows.length) throw err('Utilisateur introuvable', 404);
 
-  return db.runTransaction(async (tx) => {
-    const uSnap = await tx.get(uRef);
-    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
-
-    const u = uSnap.data();
+    const u = userService.rowToUser(uid, uRows[0]);
     const gems = Number(u.wallet_gems);
     const safeGems = Number.isFinite(gems) ? gems : 0;
     if (safeGems < cost) throw err('Gemmes insuffisantes', 400);
@@ -109,11 +119,10 @@ async function shopUnlockBreed(ownerId, body = {}) {
     unlocked.push(breed);
     const nextGems = safeGems - cost;
 
-    tx.update(uRef, {
-      wallet_gems: nextGems,
-      unlocked_breeds: unlocked,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    await conn.execute(
+      `UPDATE users SET wallet_gems = ?, unlocked_breeds = CAST(? AS JSON), updated_at = CURRENT_TIMESTAMP(3) WHERE uid = ?`,
+      [nextGems, JSON.stringify(unlocked), uid]
+    );
 
     return {
       wallet_gems: nextGems,
@@ -136,14 +145,14 @@ async function shopBuySkin(ownerId, body = {}) {
   if (cost == null) throw err('skin inconnu ou non achetable', 400);
   if (cost <= 0) throw err('skin gratuit non achetable', 400);
 
-  const db = admin.firestore();
-  const uRef = db.collection(userService.COLLECTION).doc(uid);
+  return withTransaction(async (conn) => {
+    const [uRows] = await conn.execute(
+      'SELECT * FROM users WHERE uid = ? FOR UPDATE',
+      [uid]
+    );
+    if (!uRows.length) throw err('Utilisateur introuvable', 404);
 
-  return db.runTransaction(async (tx) => {
-    const uSnap = await tx.get(uRef);
-    if (!uSnap.exists) throw err('Utilisateur introuvable', 404);
-
-    const u = uSnap.data();
+    const u = userService.rowToUser(uid, uRows[0]);
     const gems = Number(u.wallet_gems);
     const safeGems = Number.isFinite(gems) ? gems : 0;
     if (safeGems < cost) throw err('Gemmes insuffisantes', 400);
@@ -154,11 +163,10 @@ async function shopBuySkin(ownerId, body = {}) {
     unlocked.push(skinId);
     const nextGems = safeGems - cost;
 
-    tx.update(uRef, {
-      wallet_gems: nextGems,
-      unlocked_skins: unlocked,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    await conn.execute(
+      `UPDATE users SET wallet_gems = ?, unlocked_skins = CAST(? AS JSON), updated_at = CURRENT_TIMESTAMP(3) WHERE uid = ?`,
+      [nextGems, JSON.stringify(unlocked), uid]
+    );
 
     return {
       wallet_gems: nextGems,
@@ -169,4 +177,11 @@ async function shopBuySkin(ownerId, body = {}) {
   });
 }
 
-module.exports = { shopBuy, shopUnlockBreed, shopBuySkin, PRICES_GOLD, BREED_GEM_COST, SKIN_GEM_COST };
+module.exports = {
+  shopBuy,
+  shopUnlockBreed,
+  shopBuySkin,
+  PRICES_GOLD,
+  BREED_GEM_COST,
+  SKIN_GEM_COST,
+};

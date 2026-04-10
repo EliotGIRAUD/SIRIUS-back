@@ -11,19 +11,19 @@
 | Variable | Rôle |
 |----------|------|
 | `PORT` | Port HTTP d’écoute (défaut **3001** si absent). |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Chemin relatif ou absolu vers le JSON du compte de service Firebase (voir `config/firebase.js`). |
-| `DATABASE_URL` | URL base temps réel Firebase si utilisée par la config Admin (optionnel selon projet). |
+| `JWT_SECRET` | Secret de signature des JWT (connexion / inscription). En production, définir une valeur forte ; en dev absent, un défaut non sûr peut être utilisé (voir `config/jwt.js`). |
 | `CORS_ORIGINS` | Liste séparée par des **virgules** d’origines autorisées. Si **vide ou absent** : **toutes** les origines sont acceptées (pratique dev mobile, **à restreindre en prod**). |
 
-## Firestore : schéma et règles
+Connexion MySQL : paramètres dans [`db.js`](SIRIUS%20back/db.js) (`host`, `user`, `password`, `database`). Schéma initial : [`schema.sql`](SIRIUS%20back/schema.sql). Pour une base déjà créée sans colonnes d’auth : [`schema_migration_auth.sql`](SIRIUS%20back/schema_migration_auth.sql).
 
-- **`users/{uid}`** : `uid`, `pseudo`, `wallet_gold`, `wallet_gems`, `difficulty_mode`, `is_demo_mode`, `unlocked_breeds`, horodatage éventuel.
-- **`dogs/{id}`** : `id` généré par Firestore ; `ownerId`, `name`, `breed`, **`food`**, **`water`**, `health`, `is_sick`, `last_update`, `abandonment_pending_video`, `abandonment_marked_at`, etc.  
-  **`food` / `water`** : **100 = plein** ; le tick **décrémente** vers 0 (plus le chien manque de nourriture / d’eau). Anciens champs `hunger` / `thirst` encore lus une fois pour compat migration.
-- **`inventory/{ownerId}`** : `ownerId`, `items` : `{ "croquettes": number, "water_bottle": number }`.
+## MySQL : schéma logique
 
-**Accès aux données** : cette API utilise le **SDK Admin** (`firebase-admin`) : elle **contourne** les règles de sécurité Firestore côté serveur.  
-Les règles `firestore.rules` du dépôt ont été verrouillées pour `users`, `dogs` et `inventory` afin d’empêcher l’accès direct côté client. Utiliser uniquement les endpoints Express pour lire/écrire via l’API.
+- **`users`** (PK `uid`) : `pseudo`, `email` (unique, connexion), `password_hash` (bcrypt), `wallet_gold`, `wallet_gems`, `difficulty_mode`, `is_demo_mode`, `unlocked_breeds` / `unlocked_skins` (JSON), `created_at` / `updated_at`.
+- **`dogs`** (PK `id` UUID) : `owner_id` → FK `users(uid)`, `name`, `breed`, **`food`**, **`water`**, `health`, `is_sick`, `last_update_ms`, `abandonment_*`, `active_skin_id`, etc.  
+  **`food` / `water`** : **100 = plein** ; le tick **décrémente** vers 0. Anciens champs `hunger` / `thirst` encore tolérés en lecture côté API si présents.
+- **`inventory`** (PK `owner_id` → FK `users`) : `croquettes`, `water_bottle` (colonnes entières ; l’API expose toujours `inventory.items` au même format qu’avant).
+
+Toute la persistance jeu passe par **Express + mysql2** ; il n’y a plus d’accès Firestore ni `firebase-admin` pour les données.
 
 ## Table des routes
 
@@ -49,7 +49,7 @@ Chaque élément est sérialisé avec au minimum :
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `id` | string | ID document Firestore (à utiliser pour **feed** et **abandon**). |
+| `id` | string | UUID du chien en base (à utiliser pour **feed** et **abandon**). |
 | `ownerId` | string | Propriétaire (= `userId` / `uid`). |
 | `name` | string | Nom du chien. |
 | `breed` | string | Race (identifiant snake_case côté stockage). |
@@ -93,18 +93,18 @@ Alias body : `produit` pour `item` ; `race` pour `breed` (normalisé en snake_ca
 
 | Champ | Type | Obligatoire |
 |-------|------|-------------|
-| `idToken` | string | oui |
-| `pseudo` | string | non (par défaut : pseudo existant, sinon email Firebase) |
+| `email` | string | oui |
+| `password` | string | oui |
 
 **Réponses**
 
-- **200** : exemple  
-  `{"uid":"k7d...","pseudo":"Joueur1","message":"Connexion Firebase validée"}`
-- **400** : idToken absent ou vide.
-- **401** : token invalide.
-- **500** : erreur serveur / Firebase.
+- **200** : ex.  
+  `{"uid":"…","pseudo":"Joueur1","token":"<jwt>","message":"Connexion réussie"}`
+- **400** : email ou mot de passe manquant.
+- **401** : identifiants invalides.
+- **500** : erreur serveur.
 
-Comportement : vérifie `idToken` Firebase, puis met à jour/crée **`users/{uid}`** ; complète les champs économie s’ils manquaient (voir `userService`).
+Comportement : vérifie email / hash bcrypt en base, renvoie un **JWT** (`sub` = `uid`) utilisable côté client (header `Authorization: Bearer <token>` recommandé pour les évolutions ; les routes jeu actuelles utilisent encore `userId` dans le corps).
 
 ---
 
@@ -114,17 +114,18 @@ Comportement : vérifie `idToken` Firebase, puis met à jour/crée **`users/{uid
 
 | Champ | Type | Obligatoire |
 |-------|------|-------------|
-| `idToken` | string | oui |
-| `pseudo` | string | non (par défaut : email Firebase) |
+| `email` | string | oui |
+| `password` | string | oui |
+| `pseudo` | string | oui (non vide) |
 
 **Réponses**
 
-- **200** : `{"uid":"k7d...","pseudo":"Joueur1","message":"Profil utilisateur créé/initialisé"}`
-- **400** : idToken absent ou vide.
-- **401** : token invalide.
-- **500** : erreur serveur / Firebase.
+- **200** : `{"uid":"…","pseudo":"Joueur1","token":"<jwt>","message":"Compte créé"}`
+- **400** : champs manquants ou pseudo vide.
+- **409** : email déjà utilisé.
+- **500** : erreur serveur.
 
-Comportement : identique à `POST /auth/login`, utilisé après création du compte côté Firebase.
+Comportement : crée une ligne **`users`** avec `uid` UUID, hash du mot de passe, wallets et JSON par défaut.
 
 ---
 
@@ -146,7 +147,7 @@ Comportement : identique à `POST /auth/login`, utilisé après création du com
 - **404** : utilisateur introuvable.
 - **500** : erreur serveur.
 
-Comportement : met à jour les réglages de difficulté du profil utilisateur (`users/{uid}`).
+Comportement : met à jour les réglages de difficulté du profil utilisateur (ligne **`users`**).
 
 ## `POST /init-dog`
 
@@ -160,13 +161,13 @@ Comportement : met à jour les réglages de difficulté du profil utilisateur (`
 
 **Réponses**
 
-- **201** : chien créé ; contient **`id`** (ID Firestore). Exemple :  
-  `{"id":"abc123","ownerId":"proto-sirius-user-001","name":"Rex","breed":"golden_retriever","food":100,"water":100,"health":100,...}`
-- **404** : utilisateur **`users/{userId}`** introuvable (login requis avant).
+- **201** : chien créé ; contient **`id`** (UUID MySQL). Exemple :  
+  `{"id":"…","ownerId":"…","name":"Rex","breed":"golden_retriever","food":100,"water":100,"health":100,...}`
+- **404** : utilisateur **`userId`** introuvable (inscription / connexion requises avant).
 - **400** : `name` ou `userId` manquant.
 - **500** : erreur serveur.
 
-Comportement : nouveau document dans **`dogs`** (ID auto) ; **`ensureInventory(userId)`** si pas d’inventaire.
+Comportement : nouvelle ligne dans **`dogs`** (UUID) ; **`ensureInventory(userId)`** si pas d’inventaire.
 
 ---
 
@@ -186,7 +187,7 @@ Champs utiles pour le **client** (simulation fluide entre requêtes) :
 - **`server_now_ms`** : horloge serveur (ms depuis epoch) au moment de la réponse — pour aligner le décompte local.
 - Chaque chien inclut **`tick_meta`** : paramètres de perte (race + `is_demo_mode` + `hardcore`) — **à garder en sync** avec `dogService.applyTickFromValues`.
 
-Persistance Firestore : les stats chien ne sont **écrites** qu’environ **toutes les 2 minutes** si seul `GET /dogs` est utilisé ; la réponse JSON contient toujours l’état **calculé** à l’instant `server_now_ms`.
+Persistance MySQL : les stats chien ne sont **écrites** qu’environ **toutes les 2 minutes** si seul `GET /dogs` est utilisé ; la réponse JSON contient toujours l’état **calculé** à l’instant `server_now_ms`.
 
 ```json
 {
@@ -367,7 +368,7 @@ Interaction type **gyroscope** (« ramasser les besoins ») : crédit fixe **+5*
 
 ## `POST /dog/:id/abandon`
 
-**Paramètre** : `id` = **`id`** Firestore du chien.
+**Paramètre** : `id` = **`id`** (UUID) du chien.
 
 **Réponses**
 
@@ -379,9 +380,9 @@ Interaction type **gyroscope** (« ramasser les besoins ») : crédit fixe **+5*
 
 ## `PATCH /dog/:id/equip-skin`
 
-Équipe un skin sur un chien (champ `active_skin_id` sur `dogs/{id}`).
+Équipe un skin sur un chien (champ `active_skin_id` sur la ligne **`dogs`**).
 
-**Paramètre** : `id` = **`id`** Firestore du chien.
+**Paramètre** : `id` = **`id`** (UUID) du chien.
 
 **Body**
 
@@ -407,7 +408,7 @@ Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_OR
 
 ## Flux conseillé (intégration front)
 
-1. `POST /auth/register` (inscription) puis `POST /auth/login` (connexion) avec **`idToken` Firebase** → conserver **`uid`**.
+1. `POST /auth/register` puis `POST /auth/login` avec **`email`** + **`password`** → conserver **`uid`** et le **`token`** JWT.
 2. `POST /init-dog` avec **`userId: uid`** → conserver **`id`** du chien (répéter pour plusieurs chiens).
 3. `PATCH /user/settings` pour choisir `difficulty_mode` / `is_demo_mode` (profil).
 4. `GET /dogs/{uid}` pour l’écran principal (liste **`dogs`**, wallets, inventaire).
@@ -421,14 +422,12 @@ Comportement défini dans [`server.js`](SIRIUS%20back/server.js) : si **`CORS_OR
 
 ## Sécurité — limitations du prototype actuel
 
-L’API **ne vérifie pas de jeton** (pas de JWT / session) : toute requête peut fournir un **`userId` quelconque** dans l’URL ou le body. Qui connaît ou devine un `userId` peut lire **`GET /dogs/:userId`**, dépenser l’or, appeler **clean** / **walk** / **shop**, etc. (**IDOR**).
+Les routes **jeu** (`GET /dogs`, shop, interact, etc.) **ne vérifient pas encore** systématiquement le JWT : le **`userId`** dans l’URL ou le body reste la source de vérité (**IDOR** si quelqu’un connaît un `uid`).
 
-- **`POST /auth/login`** vérifie l’**`idToken` Firebase** et renvoie un **uid réel** (pas d’UID prototype fixe).
-- **`POST /dog/:id/abandon`** ne vérifie **pas** que l’appelant est le propriétaire du chien.
-- **clean** et **walk** peuvent être **spamés** (pas de rate limiting).
-- En prod : restreindre **CORS**, ajouter **auth** (ex. vérifier un ID token Firebase et **ignorer** ou **contrôler** le `userId` du body), **rate limiting**, et renforcer **abandon**.
-
-Ces points sont une **dette sécurité** assumée pour le jalon ; le front doit traiter **`userId`** comme une donnée sensible côté UX, pas comme une protection serveur.
+- **`POST /auth/login`** et **`POST /auth/register`** renvoient un **JWT** signé (`JWT_SECRET`) ; le client peut envoyer `Authorization: Bearer <token>` (recommandé pour une V2 qui contrôle `sub` vs `userId`).
+- **`POST /dog/:id/abandon`** ne vérifie **pas** que l’appelant est le propriétaire du chien (à durcir).
+- **clean** et **walk** : pas de rate limiting.
+- En prod : **`JWT_SECRET`** fort, CORS restreint, lier **`userId`** du body au **`sub`** du JWT sur toutes les routes mutantes, rate limiting.
 
 ---
 
@@ -438,7 +437,7 @@ Exécutée contre une instance locale sur **`PORT=3010`** (le port **3001** peut
 
 | Étape | Résultat attendu | Observé |
 |-------|------------------|--------|
-| POST `/auth/login` | 200 + `uid` | OK |
+| POST `/auth/login` | 200 + `uid` + `token` | OK |
 | POST `/init-dog` | 201 + `id` auto | OK |
 | GET `/dogs/:uid` | 200, `dogs.length >= 1` | OK |
 | POST `/shop/buy` (user valide) | 200, or diminué | OK |
@@ -455,7 +454,6 @@ puis enchaîner les appels HTTP ci-dessus.
 
 ## Feuille de route sécurité (V2 — hors périmètre code actuel)
 
-- Vérifier un **JWT** (ex. Firebase Auth) et **lier** `userId` au **sub** du token.
+- Vérifier le **JWT** sur chaque route et **lier** `userId` du body au **`sub`** du token.
 - Exiger `userId` + vérification **propriétaire** pour **abandon**.
 - **Rate limiting** sur `clean`, `walk`, `shop`.
-- Déployer **`firestore.rules`** cohérents si accès client direct à Firestore.
