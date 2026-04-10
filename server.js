@@ -2,7 +2,7 @@ require('dotenv').config();
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
-require('./config/firebase');
+require('./db');
 const authRoutes = require('./routes/authRoutes');
 const dogRoutes = require('./routes/dogRoutes');
 const shopRoutes = require('./routes/shopRoutes');
@@ -11,10 +11,6 @@ const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 
-/**
- * CORS : pour le prototype, on autorise toutes les origines (Expo Go, émulateurs, origine null sur mobile, localhost Web).
- * En production, restreindre via la variable CORS_ORIGINS (liste séparée par des virgules).
- */
 const corsList = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
   : null;

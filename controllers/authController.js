@@ -1,78 +1,53 @@
 const userService = require('../services/userService');
-const admin = require('../config/firebase');
-
-function pickPseudoFromRequest(decoded, req) {
-  const pseudoRaw = req?.body && req.body.pseudo;
-  if (typeof pseudoRaw === 'string' && pseudoRaw.trim()) return pseudoRaw.trim();
-  if (typeof decoded?.email === 'string' && decoded.email.trim()) return decoded.email.trim();
-  return '';
-}
+const { signToken } = require('../config/jwt');
 
 async function login(req, res) {
   try {
-    const idTokenRaw = req.body && req.body.idToken;
-    const idToken = typeof idTokenRaw === 'string' ? idTokenRaw.trim() : '';
-    if (!idToken) {
-      res.status(400).json({ error: 'Champ requis : idToken (string non vide)' });
+    const emailRaw = req.body && req.body.email;
+    const passwordRaw = req.body && req.body.password;
+    const email = typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : '';
+    const password = typeof passwordRaw === 'string' ? passwordRaw : '';
+    if (!email || !password) {
+      res.status(400).json({ error: 'email et mot de passe requis' });
       return;
     }
-
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const uid = typeof decoded?.uid === 'string' ? decoded.uid : '';
-    if (!uid) {
-      res.status(401).json({ error: 'Token invalide' });
-      return;
-    }
-
-    const pseudoBodyRaw = req?.body && req.body.pseudo;
-    let pseudo = '';
-    if (typeof pseudoBodyRaw === 'string' && pseudoBodyRaw.trim()) {
-      pseudo = pseudoBodyRaw.trim();
-    } else {
-      const existingUser = await userService.getUserById(uid);
-      const existingPseudo = existingUser && typeof existingUser.pseudo === 'string' ? existingUser.pseudo.trim() : '';
-      pseudo = existingPseudo || (typeof decoded?.email === 'string' ? decoded.email.trim() : '') || uid;
-    }
-    await userService.upsertUser(uid, pseudo);
-
+    const user = await userService.verifyCredentials(email, password);
+    const token = signToken(user.uid);
     res.status(200).json({
-      uid,
-      pseudo: pseudo || decoded.email || uid,
-      message: 'Connexion Firebase validée',
+      uid: user.uid,
+      pseudo: user.pseudo,
+      token,
+      message: 'Connexion réussie',
     });
   } catch (error) {
-    const status = error && error.code === 'auth/argument-error' ? 400 : error && error.code === 'auth/invalid-id-token' ? 401 : 500;
-    res.status(status).json({ error: error.message || 'Erreur auth' });
+    const status = error.status || 500;
+    res.status(status).json({ error: error.message || 'Erreur serveur' });
   }
 }
 
 async function register(req, res) {
   try {
-    const idTokenRaw = req.body && req.body.idToken;
-    const idToken = typeof idTokenRaw === 'string' ? idTokenRaw.trim() : '';
-    if (!idToken) {
-      res.status(400).json({ error: 'Champ requis : idToken (string non vide)' });
+    const emailRaw = req.body && req.body.email;
+    const passwordRaw = req.body && req.body.password;
+    const pseudoRaw = req.body && req.body.pseudo;
+    const email = typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : '';
+    const password = typeof passwordRaw === 'string' ? passwordRaw : '';
+    const pseudo = typeof pseudoRaw === 'string' ? pseudoRaw : '';
+    if (!email || !password) {
+      res.status(400).json({ error: 'email et mot de passe requis' });
       return;
     }
-
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const uid = typeof decoded?.uid === 'string' ? decoded.uid : '';
-    if (!uid) {
-      res.status(401).json({ error: 'Token invalide' });
-      return;
-    }
-
-    const pseudo = pickPseudoFromRequest(decoded, req);
-    await userService.upsertUser(uid, pseudo || decoded.email || uid);
-
+    const user = await userService.createUserWithCredentials(email, password, pseudo);
+    const token = signToken(user.uid);
     res.status(200).json({
-      uid,
-      pseudo: pseudo || decoded.email || uid,
-      message: 'Profil utilisateur créé/initialisé',
+      uid: user.uid,
+      pseudo: user.pseudo,
+      token,
+      message: 'Compte créé',
     });
   } catch (error) {
-    const status = error && error.code === 'auth/argument-error' ? 400 : error && error.code === 'auth/invalid-id-token' ? 401 : 500;
-    res.status(status).json({ error: error.message || 'Erreur auth' });
+    const status = error.status || 500;
+    res.status(status).json({ error: error.message || 'Erreur serveur' });
   }
 }
 
