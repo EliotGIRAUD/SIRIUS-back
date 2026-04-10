@@ -2,7 +2,7 @@ require('dotenv').config();
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
-require('./db');
+const { pool } = require('./db');
 const authRoutes = require('./routes/authRoutes');
 const dogRoutes = require('./routes/dogRoutes');
 const shopRoutes = require('./routes/shopRoutes');
@@ -41,15 +41,29 @@ app.use('/', interactRoutes);
 app.use('/', userRoutes);
 
 const PORT = Number(process.env.PORT) || 3001;
-const server = http.createServer(app);
-server.on('error', (err) => {
-  if (err && err.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} déjà utilisé (autre instance du serveur ?).`);
-  } else {
+
+async function startServer() {
+  try {
+    await pool.query('SELECT 1');
+    console.log('Connexion MySQL OK');
+  } catch (err) {
+    console.error('Connexion MySQL impossible. Vérifie DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME.');
     console.error(err);
+    process.exit(1);
   }
-  process.exitCode = 1;
-});
-server.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
-});
+
+  const server = http.createServer(app);
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} déjà utilisé (autre instance du serveur ?).`);
+    } else {
+      console.error(err);
+    }
+    process.exitCode = 1;
+  });
+  server.listen(PORT, () => {
+    console.log(`Serveur démarré sur le port ${PORT}`);
+  });
+}
+
+startServer();
